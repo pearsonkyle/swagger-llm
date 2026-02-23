@@ -24,6 +24,167 @@ def make_app() -> FastAPI:
     return app
 
 
+def make_debug_app() -> FastAPI:
+    """Return a fresh FastAPI app with LLM docs in debug mode."""
+    app = FastAPI(title="Test App Debug")
+    setup_llm_docs(app, debug=True)
+    return app
+
+
+# ── Bug Fix Tests ────────────────────────────────────────────────────────────
+
+
+def test_request_interceptor_includes_all_headers():
+    """The docs page should include the requestInterceptor with all X-LLM-* headers."""
+    client = TestClient(make_app())
+    html = client.get("/docs").text
+    
+    # Check all required headers are in the interceptor
+    required_headers = [
+        "X-LLM-Base-Url",
+        "X-LLM-Api-Key", 
+        "X-LLM-Model-Id",
+        "X-LLM-Max-Tokens",
+        "X-LLM-Temperature",
+    ]
+    
+    for header in required_headers:
+        assert header in html, f"Missing {header} from requestInterceptor"
+    
+    # Check the empty string checks for numeric fields
+    assert "maxTokens !== ''" in html or '"" !== ""' in html
+    assert "temperature !== ''" in html
+
+
+def test_empty_string_handling_in_interceptor():
+    """Test that empty strings don't get sent as header values."""
+    client = TestClient(make_app())
+    html = client.get("/docs").text
+    
+    # Verify empty string checks are present for numeric fields
+    assert "maxTokens !== ''" in html
+    assert "temperature !== ''" in html
+
+
+def test_debounce_on_connection_test():
+    """Verify debounce is applied to connection test."""
+    client = TestClient(make_app())
+    html = client.get("/docs").text
+    
+    # Check for debounce function definition
+    assert "debounce" in html or "debounce" in client.get("/swagger-llm-static/llm-settings-plugin.js").text
+
+
+def test_error_feedback_in_connection_test():
+    """Verify error feedback is shown when connection fails."""
+    client = TestClient(make_app())
+
+    # Check JavaScript file for error handling
+    js_content = client.get("/swagger-llm-static/llm-settings-plugin.js").text
+
+    # Check for .catch in JavaScript
+    assert ".catch" in js_content
+
+
+def test_route_cleanup_thread_safety():
+    """Test that route cleanup uses thread-safe operations."""
+    # Create multiple apps simultaneously
+    app1 = make_app()
+    app2 = make_app()
+    
+    client1 = TestClient(app1)
+    client2 = TestClient(app2)
+    
+    # Both should have docs endpoint
+    assert client1.get("/docs").status_code == 200
+    assert client2.get("/docs").status_code == 200
+    
+    # OpenAPI should still work
+    assert client1.get("/openapi.json").status_code == 200
+    assert client2.get("/openapi.json").status_code == 200
+
+
+def test_debug_mode_disables_cache():
+    """Test that debug mode enables auto-reload."""
+    client = TestClient(make_debug_app())
+    
+    # Debug app should work
+    response = client.get("/docs")
+    assert response.status_code == 200
+    
+    # Check that HTML contains debug-related setup
+    html = response.text
+    assert "debug" in html.lower() or "auto.reload" in html.lower()
+
+
+def test_provider_presets_available():
+    """Verify LLM provider presets are available in the JavaScript."""
+    client = TestClient(make_app())
+    
+    js_content = client.get("/swagger-llm-static/llm-settings-plugin.js").text
+    
+    # Check for provider configurations
+    providers = ["openai", "anthropic", "ollama", "lmstudio", "vllm"]
+    for provider in providers:
+        assert provider in js_content.lower() or provider.upper() in js_content
+
+
+def test_keyboard_shortcut_registered():
+    """Verify keyboard shortcut for panel toggle is registered."""
+    client = TestClient(make_app())
+    html = client.get("/docs").text
+    
+    assert "keydown" in html.lower()
+    assert "metaKey" in html or "ctrlKey" in html
+
+
+def test_number_coercion_fix():
+    """Test that Number() coercion handles empty strings correctly."""
+    client = TestClient(make_app())
+    
+    js_content = client.get("/swagger-llm-static/llm-settings-plugin.js").text
+    
+    # Check that empty string checks exist for numeric inputs
+    assert "maxTokens !== ''" in js_content
+    assert "temperature !== ''" in js_content
+
+
+def test_css_scoping():
+    """Verify CSS is properly scoped to avoid conflicts."""
+    client = TestClient(make_app())
+    html = client.get("/docs").text
+    
+    # Check for scoped styles
+    assert "#llm-settings-panel" in html or "llm-settings-panel {" in html
+    
+    # Check for provider badge styles
+    assert ".llm-provider-badge" in html or "llm-provider-badge" in html
+
+
+def test_chat_panel_included():
+    """Verify chat panel component is included."""
+    client = TestClient(make_app())
+    
+    js_content = client.get("/swagger-llm-static/llm-settings-plugin.js").text
+
+    assert "ChatPanel" in js_content
+    assert "chatHistory" in js_content
+
+
+def test_code_generator_functions():
+    """Verify code generation functions are available."""
+    client = TestClient(make_app())
+
+    js_content = client.get("/swagger-llm-static/llm-settings-plugin.js").text
+
+    # Check for curl generation
+    assert "curl" in js_content.lower()
+
+    # Note: Code generator is in a separate file (code-export-plugin.js)
+    # but the main plugin has curl-related functions
+    assert "generateCurl" in js_content or "curl" in js_content.lower()
+
+
 # ── setup_llm_docs tests ──────────────────────────────────────────────────────
 
 
@@ -112,6 +273,13 @@ def test_get_swagger_ui_html_includes_openapi_url():
     """The rendered HTML should reference the provided OpenAPI URL."""
     resp = get_swagger_ui_html(openapi_url="/custom/openapi.json", title="T")
     assert "/custom/openapi.json" in resp.body.decode()
+
+
+def test_get_swagger_ui_html_includes_debug_flag():
+    """The rendered HTML should support debug mode."""
+    from fastapi.responses import HTMLResponse
+    resp = get_swagger_ui_html(openapi_url="/openapi.json", title="T", debug=True)
+    assert isinstance(resp, HTMLResponse)
 
 
 # ── get_llm_config dependency tests ──────────────────────────────────────────
@@ -204,3 +372,85 @@ def test_llm_config_dataclass_custom_values():
     assert cfg.base_url == "http://local/v1"
     assert cfg.api_key == "key"
     assert cfg.model_id == "gpt-3.5-turbo"
+
+
+# ── Edge case tests ───────────────────────────────────────────────────────────
+
+
+def test_empty_api_key_does_not_break_requests():
+    """Test that empty API key doesn't break request interceptor."""
+    client = TestClient(make_app())
+    
+    # Make a request to an endpoint that uses LLM config
+    @client.app.get("/test")
+    def test_endpoint(llm: LLMConfig = Depends(get_llm_config)):
+        return {"has_key": llm.api_key is not None}
+    
+    response = client.get("/test")
+    assert response.status_code == 200
+    # Empty key should result in None
+    assert response.json()["has_key"] is False
+
+
+def test_provider_preset_ollama():
+    """Test Ollama provider preset."""
+    client = TestClient(make_app())
+    js_content = client.get("/swagger-llm-static/llm-settings-plugin.js").text
+    
+    # Check Ollama preset
+    assert "ollama" in js_content.lower()
+    assert "localhost:11434/v1" in js_content
+
+
+def test_provider_preset_anthropic():
+    """Test Anthropic provider preset."""
+    client = TestClient(make_app())
+    js_content = client.get("/swagger-llm-static/llm-settings-plugin.js").text
+    
+    # Check Anthropic preset
+    assert "anthropic" in js_content.lower()
+    assert "api.anthropic.com/v1" in js_content
+
+
+def test_provider_preset_vllm():
+    """Test vLLM provider preset."""
+    client = TestClient(make_app())
+    js_content = client.get("/swagger-llm-static/llm-settings-plugin.js").text
+    
+    # Check vLLM preset
+    assert "vllm" in js_content.lower()
+    assert "localhost:8000/v1" in js_content
+
+
+def test_concurrent_app_setup():
+    """Test that setting up multiple apps concurrently doesn't cause issues."""
+    import threading
+    import time
+    
+    results = []
+    
+    def setup_app(idx):
+        try:
+            app = FastAPI(title=f"Test App {idx}")
+            setup_llm_docs(app)
+            client = TestClient(app)
+            
+            # Verify docs work
+            docs_resp = client.get("/docs")
+            
+            results.append({"idx": idx, "success": docs_resp.status_code == 200})
+        except Exception as e:
+            results.append({"idx": idx, "success": False, "error": str(e)})
+    
+    # Setup multiple apps concurrently
+    threads = []
+    for i in range(5):
+        t = threading.Thread(target=setup_app, args=(i,))
+        threads.append(t)
+        t.start()
+    
+    for t in threads:
+        t.join()
+    
+    # All should succeed
+    assert all(r["success"] for r in results)

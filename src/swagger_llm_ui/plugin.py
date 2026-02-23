@@ -1,9 +1,10 @@
 """Core plugin logic: functions to mount the custom LLM-enhanced Swagger UI docs."""
 
+import threading
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Set
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader
@@ -14,6 +15,12 @@ _PACKAGE_DIR = Path(__file__).parent
 _STATIC_DIR = _PACKAGE_DIR / "static"
 _TEMPLATES_DIR = _PACKAGE_DIR / "templates"
 
+# Thread-safe lock for route modification operations
+_route_lock = threading.Lock()
+
+# Track which apps have LLM docs setup to avoid duplicate routes
+_llm_apps: Set[str] = set()
+
 
 def get_swagger_ui_html(
     *,
@@ -23,13 +30,29 @@ def get_swagger_ui_html(
     swagger_css_url: str = "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css",
     llm_settings_js_url: str = "/swagger-llm-static/llm-settings-plugin.js",
     llm_layout_js_url: str = "/swagger-llm-static/llm-layout-plugin.js",
+    debug: bool = False,
 ) -> HTMLResponse:
     """Return an HTMLResponse with the custom Swagger UI + LLM settings panel.
 
     This is the lower-level helper for users who want to serve the page manually.
     Most users should use :func:`setup_llm_docs` instead.
+
+    Args:
+        openapi_url: URL of the OpenAPI JSON schema.
+        title: Page title.
+        swagger_js_url: CDN URL for Swagger UI JS.
+        swagger_css_url: CDN URL for Swagger UI CSS.
+        llm_settings_js_url: URL for the LLM settings plugin JS.
+        llm_layout_js_url: URL for the LLM layout plugin JS.
+        debug: If True, disables template caching for development.
     """
     env = Environment(loader=FileSystemLoader(str(_TEMPLATES_DIR)), autoescape=True)
+    
+    # Disable cache if in debug mode
+    if debug:
+        env.auto_reload = True
+        env.cache.clear()
+    
     template = env.get_template("swagger_ui.html")
     html = template.render(
         title=title,
@@ -50,6 +73,7 @@ def setup_llm_docs(
     openapi_url: Optional[str] = None,
     swagger_js_url: str = "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js",
     swagger_css_url: str = "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css",
+    debug: bool = False,
 ) -> None:
     """Mount the LLM-enhanced Swagger UI docs on a FastAPI application.
 
@@ -66,21 +90,34 @@ def setup_llm_docs(
         openapi_url: URL of the OpenAPI JSON schema (defaults to ``app.openapi_url``).
         swagger_js_url: CDN URL for the Swagger UI JS bundle.
         swagger_css_url: CDN URL for the Swagger UI CSS.
+        debug: If True, enables debug mode with template auto-reload (default False).
     """
     resolved_title = title or f"{app.title} – LLM Docs"
     resolved_openapi_url = openapi_url or app.openapi_url or "/openapi.json"
 
-    # Remove any existing docs/redoc routes registered by FastAPI
-    from starlette.routing import Route
+    # Use thread lock for route modification to avoid race conditions
+    with _route_lock:
+        # Check if this app already has LLM docs setup to avoid duplicates
+        app_id = id(app)
+        if app_id in _llm_apps:
+            return
 
-    app.router.routes = [
-        r for r in app.router.routes
-        if not (isinstance(r, Route) and r.path in {docs_url, app.docs_url, app.redoc_url})
-    ]
-    app.docs_url = None
-    app.redoc_url = None
+        # Safely remove any existing docs/redoc routes registered by FastAPI
+        from starlette.routing import Route
 
-    # Mount static files for the plugin JS
+        # Filter routes while avoiding concurrent modification issues
+        original_routes = list(app.router.routes)
+        app.router.routes = [
+            r for r in original_routes
+            if not (isinstance(r, Route) and r.path in {docs_url, app.docs_url, app.redoc_url})
+        ]
+        app.docs_url = None
+        app.redoc_url = None
+
+        # Mark this app as having LLM docs setup
+        _llm_apps.add(app_id)
+
+    # Mount static files for the plugin JS (outside lock to avoid blocking)
     app.mount(
         "/swagger-llm-static",
         StaticFiles(directory=str(_STATIC_DIR)),
@@ -97,4 +134,5 @@ def setup_llm_docs(
             swagger_css_url=swagger_css_url,
             llm_settings_js_url="/swagger-llm-static/llm-settings-plugin.js",
             llm_layout_js_url="/swagger-llm-static/llm-layout-plugin.js",
+            debug=debug,
         )
