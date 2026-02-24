@@ -19,33 +19,35 @@
   // ── Transformers.js in-browser inference ──────────────────────────────────
   var _transformersPipeline = null;
   var _transformersModelId = null;
-  var _transformersLoading = false;
+  var _transformersLoadingPromise = null;
 
   function getTransformersPipeline(modelId, progressCallback) {
     if (_transformersPipeline && _transformersModelId === modelId) {
       return Promise.resolve(_transformersPipeline);
     }
-    if (_transformersLoading) {
-      return Promise.reject(new Error('Model is already loading, please wait...'));
+    if (_transformersLoadingPromise && _transformersModelId === modelId) {
+      return _transformersLoadingPromise;
     }
-    _transformersLoading = true;
-    return import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3')
+    // Reset if model changed while loading
+    _transformersPipeline = null;
+    _transformersModelId = modelId;
+    _transformersLoadingPromise = import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3')
       .then(function (transformers) {
         return transformers.pipeline('text-generation', modelId, {
-          dtype: 'fp32',
           progress_callback: progressCallback
         });
       })
       .then(function (pipe) {
         _transformersPipeline = pipe;
-        _transformersModelId = modelId;
-        _transformersLoading = false;
+        _transformersLoadingPromise = null;
         return pipe;
       })
       .catch(function (err) {
-        _transformersLoading = false;
+        _transformersLoadingPromise = null;
+        _transformersModelId = null;
         throw err;
       });
+    return _transformersLoadingPromise;
   }
 
   // ── Markdown parser initialization (marked.js) ────────────────────────────

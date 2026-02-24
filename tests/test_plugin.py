@@ -446,9 +446,8 @@ def test_transformersjs_default_model_in_provider():
     client = TestClient(make_app())
     js_content = client.get("/swagger-llm-static/llm-settings-plugin.js").text
     
-    # Verify the defaultModel property is present for transformersjs
-    assert "defaultModel" in js_content
-    assert "ibm-granite/granite-4.0-h-350m" in js_content
+    # Verify defaultModel is associated with the transformersjs provider entry
+    assert "transformersjs: { name: 'Transformers.js (In-Browser)', url: '', defaultModel: 'ibm-granite/granite-4.0-h-350m' }" in js_content
 
 
 def test_concurrent_app_setup():
