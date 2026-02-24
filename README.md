@@ -1,4 +1,6 @@
-# swagger-llm-ui
+# Swagger LLM Plugin
+
+![](examples/example.gif)
 
 > Add an LLM-enhanced API documentation to your FastAPI Swagger UI docs page.
 
