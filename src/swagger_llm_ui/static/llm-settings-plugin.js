@@ -111,14 +111,25 @@
   };
 
   var THEME_STORAGE_KEY = "swagger-llm-theme";
+  var SETTINGS_STORAGE_KEY = "swagger-llm-settings";
+  var CHAT_HISTORY_KEY = "swagger-llm-chat-history";
 
+  // ── Theme loading/saving functions ─────────────────────────────────────────
   function loadTheme() {
     try {
       var raw = localStorage.getItem(THEME_STORAGE_KEY);
-      return raw ? JSON.parse(raw) : { theme: 'dark', customColors: {} };
+      if (raw) {
+        var parsed = JSON.parse(raw);
+        // Validate theme is a valid key in THEME_DEFINITIONS
+        if (parsed.theme && THEME_DEFINITIONS[parsed.theme]) {
+          return parsed;
+        }
+      }
     } catch (e) {
-      return { theme: 'dark', customColors: {} };
+      console.warn('Failed to load theme from localStorage:', e);
     }
+    // Return default if invalid or not found
+    return { theme: 'dark', customColors: {} };
   }
 
   function saveTheme(themeData) {
@@ -129,30 +140,9 @@
     }
   }
 
-  var storedTheme = loadTheme();
-
-// ── Action types ────────────────────────────────────────────────────────────
-  var SET_BASE_URL = "LLM_SET_BASE_URL";
-  var SET_API_KEY = "LLM_SET_API_KEY";
-  var SET_MODEL_ID = "LLM_SET_MODEL_ID";
-  var SET_MAX_TOKENS = "LLM_SET_MAX_TOKENS";
-  var SET_TEMPERATURE = "LLM_SET_TEMPERATURE";
-  var SET_CONNECTION_STATUS = "LLM_SET_CONNECTION_STATUS";
-  var SET_PROVIDER = "LLM_SET_PROVIDER";
-  var SET_SETTINGS_OPEN = "LLM_SET_SETTINGS_OPEN";
-  var ADD_CHAT_MESSAGE = "LLM_ADD_CHAT_MESSAGE";
-  var CLEAR_CHAT_HISTORY = "LLM_CLEAR_CHAT_HISTORY";
-  var SET_OPENAPI_SCHEMA = "LLM_SET_OPENAPI_SCHEMA";
-  var SET_THEME = "LLM_SET_THEME";
-  var SET_CUSTOM_COLOR = "LLM_SET_CUSTOM_COLOR";
-
-  // ── Default state ───────────────────────────────────────────────────────────
-  var STORAGE_KEY = "swagger-llm-settings";
-  var CHAT_HISTORY_KEY = "swagger-llm-chat-history";
-
   function loadFromStorage() {
     try {
-      var raw = localStorage.getItem(STORAGE_KEY);
+      var raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
       return raw ? JSON.parse(raw) : {};
     } catch (e) {
       return {};
@@ -161,7 +151,7 @@
 
   function saveToStorage(state) {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(state));
     } catch (e) {
       // ignore
     }
@@ -184,15 +174,38 @@
     }
   }
 
-  var stored = loadFromStorage();
+// ── Action types ────────────────────────────────────────────────────────────
+  var SET_BASE_URL = "LLM_SET_BASE_URL";
+  var SET_API_KEY = "LLM_SET_API_KEY";
+  var SET_MODEL_ID = "LLM_SET_MODEL_ID";
+  var SET_MAX_TOKENS = "LLM_SET_MAX_TOKENS";
+  var SET_TEMPERATURE = "LLM_SET_TEMPERATURE";
+  var SET_CONNECTION_STATUS = "LLM_SET_CONNECTION_STATUS";
+  var SET_PROVIDER = "LLM_SET_PROVIDER";
+  var SET_SETTINGS_OPEN = "LLM_SET_SETTINGS_OPEN";
+  var ADD_CHAT_MESSAGE = "LLM_ADD_CHAT_MESSAGE";
+  var CLEAR_CHAT_HISTORY = "LLM_CLEAR_CHAT_HISTORY";
+  var SET_OPENAPI_SCHEMA = "LLM_SET_OPENAPI_SCHEMA";
+  var SET_THEME = "LLM_SET_THEME";
+  var SET_CUSTOM_COLOR = "LLM_SET_CUSTOM_COLOR";
+
+  // ── Default state ───────────────────────────────────────────────────────────
+  var storedSettings = loadFromStorage();
+  var storedTheme = loadTheme();
+
+  // ── Apply theme immediately on DOM ready to prevent flash of wrong theme ───
+  document.addEventListener('DOMContentLoaded', function() {
+    // Apply the saved/custom theme as soon as DOM is ready
+    window.applyLLMTheme(storedTheme.theme, storedTheme.customColors);
+  });
 
   var DEFAULT_STATE = {
-    baseUrl: stored.baseUrl || "https://api.openai.com/v1",
-    apiKey: stored.apiKey || "",
-    modelId: stored.modelId || "gpt-4",
-    maxTokens: stored.maxTokens != null ? stored.maxTokens : 4096,
-    temperature: stored.temperature != null ? stored.temperature : 0.7,
-    provider: stored.provider || "openai",
+    baseUrl: storedSettings.baseUrl || "https://api.openai.com/v1",
+    apiKey: storedSettings.apiKey || "",
+    modelId: storedSettings.modelId || "gpt-4",
+    maxTokens: storedSettings.maxTokens != null ? storedSettings.maxTokens : 4096,
+    temperature: storedSettings.temperature != null ? storedSettings.temperature : 0.7,
+    provider: storedSettings.provider || "openai",
     connectionStatus: "disconnected", // disconnected | connecting | connected | error
     settingsOpen: false,
     chatHistory: loadChatHistory(),
@@ -282,6 +295,11 @@
         return Object.assign({}, state, { openapiSchema: action.payload });
       case SET_THEME:
         var newTheme = action.payload;
+        // Validate theme
+        if (!THEME_DEFINITIONS[newTheme]) {
+          console.warn('Invalid theme:', newTheme, 'Using default dark theme');
+          newTheme = 'dark';
+        }
         var themeDef = THEME_DEFINITIONS[newTheme] || THEME_DEFINITIONS.dark;
         // Merge custom colors with defaults for this theme
         var mergedColors = Object.assign({}, themeDef, state.customColors || {});
@@ -481,8 +499,6 @@
         this.state = {
           input: "",
           isTyping: false,
-          streamingContent: null,
-          streamingTimestamp: null,
           chatHistory: loadChatHistory(),
           schemaSummary: null,
           schemaLoading: false,
@@ -546,7 +562,14 @@
 
       addMessage(msg) {
         this.setState(function (prev) {
-          var updated = prev.chatHistory.concat([msg]);
+          var history = prev.chatHistory || [];
+          // If the last message is from assistant and has same timestamp (streaming), update it instead of appending
+          if (history.length > 0 && msg.role === 'assistant' && history[history.length - 1].role === 'assistant' && history[history.length - 1].timestamp === msg.timestamp) {
+            var updated = history.slice(0, -1).concat([msg]);
+            saveChatHistory(updated);
+            return { chatHistory: updated };
+          }
+          var updated = history.concat([msg]);
           saveChatHistory(updated);
           return { chatHistory: updated };
         });
@@ -569,12 +592,6 @@
         }
       }
 
-      saveAccumulatedContent(accumulated) {
-        if (accumulated && accumulated.trim() && accumulated !== "*(cancelled)*") {
-          this.addMessage({ role: 'assistant', content: accumulated, timestamp: Date.now() });
-        }
-      }
-
       handleSend() {
         if (!this.state.input.trim() || this.state.isTyping) return;
 
@@ -591,31 +608,35 @@
 
         // Add user message to local state
         self.addMessage(userMsg);
+        // Also add empty assistant message immediately so it persists in chatHistory
+        self.addMessage({ role: 'assistant', content: '', timestamp: streamTs });
         var cancelToken = new AbortController();
-        self.setState({ input: "", isTyping: true, streamingContent: "", streamingTimestamp: streamTs, cancelToken: cancelToken });
+        self.setState({ input: "", isTyping: true, cancelToken: cancelToken });
 
         var settings = loadFromStorage();
 
-        function scrollToBottom() {
+        var scrollToBottom = function() {
           var el = document.getElementById('llm-chat-messages');
           if (el) el.scrollTop = el.scrollHeight;
-        }
+        };
 
-        function finalize(content, saveContent) {
+        var finalize = function(content, saveContent) {
+          // Update the assistant message in chatHistory with final content
           if (saveContent && content && content.trim() && content !== "*(cancelled)*") {
             self.addMessage({ role: 'assistant', content: content, timestamp: streamTs });
           }
           self.setState({ 
-            isTyping: false, 
-            streamingContent: null, 
-            streamingTimestamp: null,
+            isTyping: false,
             cancelToken: null
           });
           setTimeout(scrollToBottom, 30);
-        }
+        };
 
         // Track accumulated content at handleSend scope so cancel/catch can access it
         var accumulated = "";
+        
+        // Track the timestamp of the message being streamed to update the correct message
+        var currentStreamTimestamp = streamTs;
 
         fetch("/llm-chat", {
           method: "POST",
@@ -641,7 +662,7 @@
             var decoder = new TextDecoder();
             var buffer = "";
 
-            function processChunk() {
+            var processChunk = function() {
               return reader.read().then(function (result) {
                 if (cancelToken.signal.aborted) {
                   finalize(accumulated, true);
@@ -674,7 +695,21 @@
                     }
                     if (chunk.choices && chunk.choices[0] && chunk.choices[0].delta && chunk.choices[0].delta.content) {
                       accumulated += chunk.choices[0].delta.content;
-                      self.setState({ streamingContent: accumulated });
+                      // Update the last assistant message in chatHistory with streaming content
+                      self.setState(function (prev) {
+                        var history = prev.chatHistory || [];
+                        if (history.length > 0 && history[history.length - 1].role === 'assistant' && 
+                            history[history.length - 1].timestamp === currentStreamTimestamp) {
+                          var updated = history.slice(0, -1).concat([{
+                            role: 'assistant',
+                            content: accumulated,
+                            timestamp: history[history.length - 1].timestamp
+                          }]);
+                          saveChatHistory(updated);
+                          return { chatHistory: updated };
+                        }
+                        return {};
+                      });
                       scrollToBottom();
                     }
                   } catch (e) {
@@ -684,7 +719,7 @@
 
                 return processChunk();
               });
-            }
+            };
 
             return processChunk();
           })
@@ -745,10 +780,17 @@
         this.setState({ chatHistory: [] });
       }
 
-      renderMessage(msg) {
+      renderMessage(msg, idx) {
         var React = system.React;
         var self = this;
         var isUser = msg.role === 'user';
+        
+        // Check if this is the last assistant message and we're currently typing
+        var chatHistory = self.state.chatHistory || [];
+        var isStreamingThisMessage = self.state.isTyping && 
+          !isUser && 
+          idx === chatHistory.length - 1 &&
+          msg.role === 'assistant';
         
         return React.createElement(
           "div",
@@ -785,7 +827,7 @@
                   onClick: function() { self.copyToClipboard(msg.content); },
                   title: "Copy message",
                   style: Object.assign({}, styles.copyMessageBtn, {
-                    opacity: self.state.headerHover[msg.timestamp] || self.state.copiedMessageId === msg.timestamp ? 1 : 0
+                    opacity: (self.state.headerHover[msg.timestamp] || self.state.copiedMessageId === msg.timestamp) && !isStreamingThisMessage ? 1 : 0
                   })
                 },
                 self.state.copiedMessageId === msg.timestamp ? "✅" : "📋"
@@ -794,18 +836,24 @@
             React.createElement(
               "div",
               { className: "llm-chat-message-content" },
-              this.formatMessageContent(msg.content)
+              this.formatMessageContent(msg.content, isStreamingThisMessage)
             )
           )
         );
       }
 
-      formatMessageContent(content) {
+      formatMessageContent(content, isStreaming) {
         var React = system.React;
         
-        // If content is empty, return null
+        // If content is empty and we're streaming, show a "streaming..." indicator
         if (!content || !content.trim()) {
-          return React.createElement("span", { style: { opacity: 0.5 } }, "(no content)");
+          if (isStreaming) {
+            return React.createElement("span", { 
+              className: "llm-streaming-indicator",
+              style: { fontStyle: 'italic', opacity: 0.7, fontSize: '13px', marginTop: '8px' }
+            }, "Stream starting...");
+          }
+          return null;
         }
         
         // Parse Markdown
@@ -860,24 +908,15 @@
           React.createElement(
             "div",
             { id: "llm-chat-messages", style: styles.chatMessages },
-            chatHistory.length === 0 && !this.state.streamingContent
+            chatHistory.length === 0
               ? React.createElement(
                   "div",
                   { style: styles.emptyChat },
                   "Ask questions about your API!\n\nExamples:\n\u2022 What endpoints are available?\n\u2022 How do I use the chat completions endpoint?\n\u2022 Generate a curl command for /health"
                 )
-              : [].concat(
-                  chatHistory.map(this.renderMessage),
-                  this.state.streamingContent != null
-                    ? [this.renderMessage({
-                        role: 'assistant',
-                        content: this.state.streamingContent || "...",
-                        timestamp: this.state.streamingTimestamp || 0
-                      })]
-                    : []
-                )
+              : chatHistory.map(this.renderMessage)
             ),
-          this.state.isTyping && !this.state.streamingContent
+          this.state.isTyping
             ? React.createElement(
                 "div",
                 { style: { padding: "8px 12px", color: "var(--theme-text-secondary)", fontSize: "12px" } },
@@ -941,6 +980,7 @@
     return class LLMSettingsPanel extends React.Component {
       constructor(props) {
         super(props);
+        // Initialize with safe defaults from stored settings
         var s = loadFromStorage();
         this.state = {
           baseUrl: s.baseUrl || DEFAULT_STATE.baseUrl,
@@ -949,8 +989,8 @@
           maxTokens: s.maxTokens != null && s.maxTokens !== '' ? s.maxTokens : DEFAULT_STATE.maxTokens,
           temperature: s.temperature != null && s.temperature !== '' ? s.temperature : DEFAULT_STATE.temperature,
           provider: s.provider || DEFAULT_STATE.provider,
-          theme: storedTheme.theme || DEFAULT_STATE.theme,
-          customColors: storedTheme.customColors || DEFAULT_STATE.customColors,
+          theme: DEFAULT_STATE.theme,
+          customColors: DEFAULT_STATE.customColors,
           connectionStatus: "disconnected",
           settingsOpen: false,
           lastError: "",
@@ -965,16 +1005,28 @@
         this.handleMaxTokensChange = this.handleMaxTokensChange.bind(this);
         this.handleTemperatureChange = this.handleTemperatureChange.bind(this);
         this.handleThemeChange = this.handleThemeChange.bind(this);
-
-        // Apply theme on mount
-        window.applyLLMTheme(this.state.theme, this.state.customColors);
       }
 
       componentDidMount() {
-        // Reload theme from localStorage in case it changed (e.g., tab switch)
+        // Reload theme from localStorage to ensure we have the latest values
         var stored = loadTheme();
-        this.setState({ theme: stored.theme, customColors: stored.customColors });
-        window.applyLLMTheme(stored.theme, stored.customColors);
+        // Update state with validated theme from localStorage
+        this.setState({ 
+          theme: stored.theme || DEFAULT_STATE.theme, 
+          customColors: stored.customColors || {} 
+        });
+        
+        // Apply theme using requestAnimationFrame to ensure DOM is ready
+        requestAnimationFrame(function() {
+          window.applyLLMTheme(stored.theme || DEFAULT_STATE.theme, stored.customColors);
+        });
+      }
+
+      componentDidUpdate(prevProps, prevState) {
+        // Apply theme when theme or colors change
+        if (prevState.theme !== this.state.theme || prevState.customColors !== this.state.customColors) {
+          window.applyLLMTheme(this.state.theme, this.state.customColors);
+        }
       }
 
       handleSaveSettings() {
@@ -990,13 +1042,6 @@
         // Also ensure current theme is persisted to localStorage
         saveTheme({ theme: this.state.theme, customColors: this.state.customColors });
         // Don't change connection status, just save
-      }
-
-      componentDidUpdate(prevProps, prevState) {
-        // Apply theme when theme or colors change
-        if (prevState.theme !== this.state.theme || prevState.customColors !== this.state.customColors) {
-          window.applyLLMTheme(this.state.theme, this.state.customColors);
-        }
       }
 
       handleTestConnection() {
@@ -1581,6 +1626,9 @@
     '.llm-chat-message-text p:first-child { margin-top: 4px; }',
     '.llm-chat-message-text p:last-child { margin-bottom: 4px; }',
 
+    // Streaming placeholder indicator
+    '.llm-streaming-indicator { color: var(--theme-accent); font-style: italic; opacity: 0.7; font-size: 13px; margin-top: 8px; }',
+
     // Markdown content in messages
     '.llm-chat-message-text strong { color: var(--theme-text-primary); }',
     '.llm-chat-message-text em { font-style: italic; }',
@@ -1661,7 +1709,9 @@
 
   // ── Theme injection function ────────────────────────────────────────────────
   window.applyLLMTheme = function (themeName, customColors) {
-    var themeDef = THEME_DEFINITIONS[themeName] || THEME_DEFINITIONS.dark;
+    // Validate theme name
+    var validatedTheme = THEME_DEFINITIONS[themeName] ? themeName : 'dark';
+    var themeDef = THEME_DEFINITIONS[validatedTheme];
 
     // Merge custom colors with theme defaults
     var finalColors = Object.assign({}, themeDef, customColors);
