@@ -342,6 +342,7 @@
           schemaLoading: false,
           copiedMessageId: null,
           headerHover: {},
+          cancelToken: null,
         };
         this.handleSend = this.handleSend.bind(this);
         this.handleInputChange = this.handleInputChange.bind(this);
@@ -394,6 +395,12 @@
         }
       }
 
+      handleCancel() {
+        if (this.state.cancelToken) {
+          this.state.cancelToken.abort();
+        }
+      }
+
       handleSend() {
         if (!this.state.input.trim() || this.state.isTyping) return;
 
@@ -404,7 +411,8 @@
         // Add user message to local state immediately
         var userMsg = { role: 'user', content: userInput, timestamp: Date.now() };
         self.addMessage(userMsg);
-        self.setState({ input: "", isTyping: true, streamingContent: "", streamingTimestamp: streamTs });
+        var cancelToken = new AbortController();
+        self.setState({ input: "", isTyping: true, streamingContent: "", streamingTimestamp: streamTs, cancelToken: cancelToken });
 
         // Build API messages from local state (includes the user message we just added)
         var apiMessages = self.state.chatHistory.concat([userMsg]).map(function (m) {
@@ -420,7 +428,12 @@
 
         function finalize(content) {
           self.addMessage({ role: 'assistant', content: content, timestamp: streamTs });
-          self.setState({ isTyping: false, streamingContent: null, streamingTimestamp: null });
+          self.setState({ 
+            isTyping: false, 
+            streamingContent: null, 
+            streamingTimestamp: null,
+            cancelToken: null
+          });
           setTimeout(scrollToBottom, 30);
         }
 
@@ -437,7 +450,8 @@
           body: JSON.stringify({
             messages: apiMessages,
             openapi_summary: self.state.schemaSummary || ""
-          })
+          }),
+          signal: cancelToken.signal
         })
           .then(function (res) {
             if (!res.ok) {
@@ -450,6 +464,10 @@
 
             function processChunk() {
               return reader.read().then(function (result) {
+                if (cancelToken.signal.aborted) {
+                  finalize("Stream cancelled by user.");
+                  return;
+                }
                 if (result.done) {
                   finalize(accumulated || "Sorry, I couldn't get a response.");
                   return;
@@ -492,7 +510,11 @@
             return processChunk();
           })
           .catch(function (err) {
-            finalize("Error: " + (err.message || "Request failed"));
+            if (err.name === 'AbortError') {
+              finalize("Stream cancelled by user.");
+            } else {
+              finalize("Error: " + (err.message || "Request failed"));
+            }
           });
 
         setTimeout(scrollToBottom, 50);
@@ -670,6 +692,15 @@
                 },
                 "Clear"
               ),
+              this.state.isTyping && React.createElement(
+                "button",
+                {
+                  onClick: this.handleCancel,
+                  style: Object.assign({}, styles.sendButton, { background: "#dc2626" }),
+                  title: "Cancel streaming response"
+                },
+                "Cancel"
+              ),
               React.createElement(
                 "button",
                 {
@@ -707,12 +738,25 @@
           settingsOpen: false,
           lastError: "",
         };
-        this.handleSaveAndTest = debounce(this.handleSaveAndTest.bind(this), 500);
+        this.handleSaveSettings = this.handleSaveSettings.bind(this);
+        this.handleTestConnection = this.handleTestConnection.bind(this);
         this.toggleOpen = this.toggleOpen.bind(this);
-        this.handleConnectionTest = debounce(this.handleConnectionTest.bind(this), 500);
       }
 
-      handleSaveAndTest() {
+      handleSaveSettings() {
+        var settings = {
+          baseUrl: this.state.baseUrl,
+          apiKey: this.state.apiKey,
+          modelId: this.state.modelId,
+          maxTokens: this.state.maxTokens !== '' ? this.state.maxTokens : null,
+          temperature: this.state.temperature !== '' ? this.state.temperature : null,
+          provider: this.state.provider,
+        };
+        saveToStorage(settings);
+        // Don't change connection status, just save
+      }
+
+      handleTestConnection() {
         var self = this;
         var settings = {
           baseUrl: this.state.baseUrl,
@@ -722,6 +766,7 @@
           temperature: this.state.temperature !== '' ? this.state.temperature : null,
           provider: this.state.provider,
         };
+        // Update localStorage with current state values (for test)
         saveToStorage(settings);
         self.setState({ connectionStatus: "connecting", lastError: "" });
         dispatchAction(system, 'setConnectionStatus', "connecting");
@@ -751,10 +796,6 @@
             self.setState({ connectionStatus: "error", lastError: errorMsg });
             dispatchAction(system, 'setConnectionStatus', "error");
           });
-      }
-
-      handleConnectionTest() {
-        this.handleSaveAndTest();
       }
 
       toggleOpen() {
@@ -933,7 +974,7 @@
         var saveButton = React.createElement(
           "button",
           {
-            onClick: this.handleSaveAndTest,
+            onClick: this.handleSaveSettings,
             style: {
               background: "#2563eb",
               color: "#fff",
@@ -945,25 +986,25 @@
               fontWeight: "600",
             },
           },
-          "Save & Test Connection"
+          "Save Configuration"
         );
 
         var testButton = React.createElement(
           "button",
           {
-            onClick: this.handleConnectionTest,
+            onClick: this.handleTestConnection,
             style: {
               background: "#4b5563",
               color: "#fff",
               border: "none",
               borderRadius: "4px",
-              padding: "6px 12px",
+              padding: "8px 18px",
               cursor: "pointer",
-              fontSize: "12px",
+              fontSize: "13px",
               marginLeft: "8px",
             },
           },
-          "Test"
+          "Test Connection"
         );
 
         var statusBadge = React.createElement(
@@ -1001,35 +1042,6 @@
             saveButton,
             testButton,
             statusBadge
-          ),
-          React.createElement(
-            "div",
-            { style: { marginTop: "12px", padding: "10px", background: "#374151", borderRadius: "4px" } },
-            React.createElement(
-              "div",
-              { style: { fontSize: "12px", fontWeight: "600", color: "#e5e7eb", marginBottom: "8px" } },
-              "Quick Actions"
-            ),
-            React.createElement(
-              "div",
-              { style: { display: "flex", gap: "8px" } },
-              React.createElement(
-                "button",
-                {
-                  onClick: function () { window.ui.specActions.download(); },
-                  style: {
-                    background: "#4b5563",
-                    color: "#fff",
-                    border: "none",
-                    borderRadius: "4px",
-                    padding: "6px 12px",
-                    cursor: "pointer",
-                    fontSize: "11px"
-                  }
-                },
-                "Download OpenAPI"
-              )
-            )
           )
         );
 
