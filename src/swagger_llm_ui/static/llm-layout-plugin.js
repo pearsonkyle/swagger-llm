@@ -26,11 +26,11 @@
         localStorage.setItem(TAB_STORAGE_KEY, activeTab);
       }, [activeTab]);
 
-      // Tab styles for 3 tabs
+      // Tab styles for 3 tabs (theme-aware)
       var tabStyle = function (tab) {
         return {
-          background: activeTab === tab ? "#2563eb" : "#374151",
-          color: activeTab === tab ? "#fff" : "#9ca3af",
+          background: activeTab === tab ? "var(--theme-primary)" : "var(--theme-secondary)",
+          color: activeTab === tab ? "#fff" : "var(--theme-text-secondary)",
           border: "none",
           borderRadius: "4px 4px 0 0",
           padding: "8px 16px",
@@ -49,9 +49,9 @@
           {
             style: {
               fontFamily: "'Inter', 'Segoe UI', sans-serif",
-              border: "1px solid #374151",
+              border: "1px solid var(--theme-border-color)",
               borderRadius: "6px 6px 0 0",
-              background: "#111827",
+              background: "var(--theme-header-bg)",
             }
           },
           React.createElement(
@@ -69,11 +69,11 @@
               { onClick: function () { setActiveTab("chat"); }, style: tabStyle("chat") },
               "Chat"
             ),
-            // LLM Settings tab
+            // Settings tab
             React.createElement(
               "button",
               { onClick: function () { setActiveTab("settings"); }, style: tabStyle("settings") },
-              "LLM Settings"
+              "Settings"
             )
           )
         ),
@@ -83,10 +83,10 @@
           "div",
           {
             style: {
-              border: "1px solid #374151",
+              border: "1px solid var(--theme-border-color)",
               borderTop: "none",
               borderRadius: "0 0 6px 6px",
-              background: "#111827",
+              background: "var(--theme-header-bg)",
             }
           },
           // API Explorer tab content

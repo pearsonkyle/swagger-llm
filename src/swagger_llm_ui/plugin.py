@@ -42,6 +42,7 @@ def get_swagger_ui_html(
     title: str,
     swagger_js_url: str = "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js",
     swagger_css_url: str = "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css",
+    theme_css_url: str = "/swagger-llm-static/themes/dark-theme.css",
     llm_settings_js_url: str = "/swagger-llm-static/llm-settings-plugin.js",
     llm_layout_js_url: str = "/swagger-llm-static/llm-layout-plugin.js",
     debug: bool = False,
@@ -56,23 +57,25 @@ def get_swagger_ui_html(
         title: Page title.
         swagger_js_url: CDN URL for Swagger UI JS.
         swagger_css_url: CDN URL for Swagger UI CSS.
+        theme_css_url: URL for the theme CSS file.
         llm_settings_js_url: URL for the LLM settings plugin JS.
         llm_layout_js_url: URL for the LLM layout plugin JS.
         debug: If True, disables template caching for development.
     """
     env = Environment(loader=FileSystemLoader(str(_TEMPLATES_DIR)), autoescape=True)
-    
+
     # Disable cache if in debug mode
     if debug:
         env.auto_reload = True
         env.cache.clear()
-    
+
     template = env.get_template("swagger_ui.html")
     html = template.render(
         title=title,
         openapi_url=openapi_url,
         swagger_js_url=swagger_js_url,
         swagger_css_url=swagger_css_url,
+        theme_css_url=theme_css_url,
         llm_settings_js_url=llm_settings_js_url,
         llm_layout_js_url=llm_layout_js_url,
     )
@@ -87,6 +90,7 @@ def setup_llm_docs(
     openapi_url: Optional[str] = None,
     swagger_js_url: str = "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js",
     swagger_css_url: str = "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css",
+    theme_css_url: str = "/swagger-llm-static/themes/dark-theme.css",
     debug: bool = False,
 ) -> None:
     """Mount the LLM-enhanced Swagger UI docs on a FastAPI application.
@@ -146,6 +150,7 @@ def setup_llm_docs(
             title=resolved_title,
             swagger_js_url=swagger_js_url,
             swagger_css_url=swagger_css_url,
+            theme_css_url="/swagger-llm-static/themes/dark-theme.css",
             llm_settings_js_url="/swagger-llm-static/llm-settings-plugin.js",
             llm_layout_js_url="/swagger-llm-static/llm-layout-plugin.js",
             debug=debug,

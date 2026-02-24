@@ -5,20 +5,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link rel="stylesheet" type="text/css" href="{{ swagger_css_url }}" />
-    <style>
-      body {
-        margin: 0;
-        background: #0f172a;
-      }
-      /* Keep the standard Swagger UI top bar */
-      .swagger-ui .topbar {
-        background: #111827;
-      }
-      /* Make the info section title more visible */
-      .swagger-ui .info .title {
-        color: #e5e7eb;
-      }
-    </style>
+    <link rel="stylesheet" type="text/css" href="{{ theme_css_url }}" />
   </head>
   <body>
     <div id="swagger-ui"></div>
@@ -43,7 +30,8 @@
       .llm-provider-openai { background-color: #10a37f; }
       .llm-provider-anthropic { background-color: #d97757; }
       .llm-provider-ollama { background-color: #2b90d8; }
-      .llm-provider-vllm { background-color: #facc15; }
+      .llm-provider-lmstudio { background-color: #6366f1; }
+      .llm-provider-vllm { background-color: #facc15; color: #1a1a1a; }
       .llm-provider-azure { background-color: #0078d4; }
     </style>
 

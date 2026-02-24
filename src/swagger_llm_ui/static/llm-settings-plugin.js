@@ -51,23 +51,87 @@
   // ── Parse Markdown safely ─────────────────────────────────────────────────
   function parseMarkdown(text) {
     if (!text || typeof text !== 'string') return '';
-    
-    // Sanitize by stripping any raw <script> tags
-    var sanitized = text.replace(/<script[^>]*>.*?<\/script>/gi, '');
-    
+
+    // Sanitize: strip dangerous tags and attributes
+    var sanitized = text
+      .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+      .replace(/<iframe[^>]*>[\s\S]*?<\/iframe>/gi, '')
+      .replace(/<object[^>]*>[\s\S]*?<\/object>/gi, '')
+      .replace(/<embed[^>]*>/gi, '')
+      .replace(/<form[^>]*>[\s\S]*?<\/form>/gi, '');
+
     try {
       if (marked) {
-        return marked.parse(sanitized);
+        var html = marked.parse(sanitized);
+        // Strip event handler attributes and javascript: URLs from parsed output
+        html = html
+          .replace(/\s+on\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*)/gi, '')
+          .replace(/href\s*=\s*["']javascript:[^"']*["']/gi, 'href="#"')
+          .replace(/src\s*=\s*["']javascript:[^"']*["']/gi, 'src=""');
+        return html;
       }
     } catch (e) {
       console.error('Markdown parsing error:', e);
     }
-    
+
     // Fallback: simple line break conversion
     return sanitized.replace(/\n/g, '<br>');
   }
 
-  // ── Action types ────────────────────────────────────────────────────────────
+  // ── Theme default configurations ─────────────────────────────────────────────
+  var THEME_DEFINITIONS = {
+    dark: {
+      name: 'Dark',
+      primary: '#1d4ed8',
+      primaryHover: '#1e40af',
+      secondary: '#2d3748',
+      accent: '#718096',
+      background: '#0f172a',
+      panelBg: '#1f2937',
+      headerBg: '#111827',
+      borderColor: '#4a5568',
+      textPrimary: '#f7fafc',
+      textSecondary: '#cbd5e0',
+      inputBg: '#1f2937',
+    },
+    light: {
+      name: 'Light',
+      primary: '#2563eb',
+      primaryHover: '#1d4ed8',
+      secondary: '#e2e8f0',
+      accent: '#718096',
+      background: '#f7fafc',
+      panelBg: '#ffffff',
+      headerBg: '#edf2f7',
+      borderColor: '#cbd5e0',
+      textPrimary: '#1a202c',
+      textSecondary: '#4a5568',
+      inputBg: '#f7fafc',
+    }
+  };
+
+  var THEME_STORAGE_KEY = "swagger-llm-theme";
+
+  function loadTheme() {
+    try {
+      var raw = localStorage.getItem(THEME_STORAGE_KEY);
+      return raw ? JSON.parse(raw) : { theme: 'dark', customColors: {} };
+    } catch (e) {
+      return { theme: 'dark', customColors: {} };
+    }
+  }
+
+  function saveTheme(themeData) {
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, JSON.stringify(themeData));
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  var storedTheme = loadTheme();
+
+// ── Action types ────────────────────────────────────────────────────────────
   var SET_BASE_URL = "LLM_SET_BASE_URL";
   var SET_API_KEY = "LLM_SET_API_KEY";
   var SET_MODEL_ID = "LLM_SET_MODEL_ID";
@@ -79,6 +143,8 @@
   var ADD_CHAT_MESSAGE = "LLM_ADD_CHAT_MESSAGE";
   var CLEAR_CHAT_HISTORY = "LLM_CLEAR_CHAT_HISTORY";
   var SET_OPENAPI_SCHEMA = "LLM_SET_OPENAPI_SCHEMA";
+  var SET_THEME = "LLM_SET_THEME";
+  var SET_CUSTOM_COLOR = "LLM_SET_CUSTOM_COLOR";
 
   // ── Default state ───────────────────────────────────────────────────────────
   var STORAGE_KEY = "swagger-llm-settings";
@@ -131,6 +197,8 @@
     settingsOpen: false,
     chatHistory: loadChatHistory(),
     lastError: "",
+    theme: storedTheme.theme || "dark",
+    customColors: storedTheme.customColors || {},
   };
 
   // ── Debounce utility ───────────────────────────────────────────────────────
@@ -212,6 +280,20 @@
         return Object.assign({}, state, { chatHistory: [] });
       case SET_OPENAPI_SCHEMA:
         return Object.assign({}, state, { openapiSchema: action.payload });
+      case SET_THEME:
+        var newTheme = action.payload;
+        var themeDef = THEME_DEFINITIONS[newTheme] || THEME_DEFINITIONS.dark;
+        // Merge custom colors with defaults for this theme
+        var mergedColors = Object.assign({}, themeDef, state.customColors || {});
+        saveTheme({ theme: newTheme, customColors: mergedColors });
+        return Object.assign({}, state, { theme: newTheme, customColors: mergedColors });
+      case SET_CUSTOM_COLOR:
+        var colorKey = action.payload.key;
+        var colorValue = action.payload.value;
+        var newColors = Object.assign({}, state.customColors || {});
+        newColors[colorKey] = colorValue;
+        saveTheme({ theme: state.theme, customColors: newColors });
+        return Object.assign({}, state, { customColors: newColors });
       default:
         return state;
     }
@@ -230,6 +312,8 @@
     addChatMessage: function (message) { return { type: ADD_CHAT_MESSAGE, payload: message }; },
     clearChatHistory: function () { return { type: CLEAR_CHAT_HISTORY }; },
     setOpenApiSchema: function (schema) { return { type: SET_OPENAPI_SCHEMA, payload: schema }; },
+    setTheme: function (value) { return { type: SET_THEME, payload: value }; },
+    setCustomColor: function (value) { return { type: SET_CUSTOM_COLOR, payload: value }; },
   };
 
   // ── Selectors ───────────────────────────────────────────────────────────────
@@ -245,6 +329,8 @@
     getChatHistory: function (state) { return state.get ? state.get("chatHistory") : state.chatHistory || []; },
     getOpenApiSchema: function (state) { return state.get ? state.get("openapiSchema") : state.openapiSchema; },
     getLastError: function (state) { return state.get ? state.get("lastError") : state.lastError; },
+    getTheme: function (state) { return state.get ? state.get("theme") : state.theme; },
+    getCustomColors: function (state) { return state.get ? state.get("customColors") : state.customColors; },
   };
 
   // ── Status indicator ───────────────────────────────────────────────────────
@@ -325,6 +411,66 @@
     return lines.join('\n');
   }
 
+  // ── Extract code blocks from markdown text for cleaner copying ─────────────
+  function extractCodeBlocks(text) {
+    if (!text || typeof text !== 'string') return text;
+
+    // Simple regex-based extraction (works without marked)
+    var codeBlocks = [];
+    
+    // Match fenced code blocks with optional language specifier
+    var codeBlockRegex = /```(\w*)\n([\s\S]*?)```/g;
+    var match;
+    while ((match = codeBlockRegex.exec(text)) !== null) {
+      var lang = match[1] || '';
+      var codeContent = match[2];
+      if (lang) {
+        codeBlocks.push('// ' + lang + '\n' + codeContent);
+      } else {
+        codeBlocks.push(codeContent);
+      }
+    }
+
+    if (codeBlocks.length > 0) {
+      return codeBlocks.join('\n\n');
+    }
+
+    // Simple fallback: remove markdown formatting but keep text
+    var clean = text;
+    
+    // Remove code block markers
+    clean = clean.replace(/```[a-z]*\n([\s\S]*?)```/gi, '$1');
+    
+    // Remove inline code
+    clean = clean.replace(/`([^`]+)`/g, '$1');
+    
+    // Remove markdown links but keep text
+    clean = clean.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
+    
+    // Remove image markdown
+    clean = clean.replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1');
+    
+    // Remove bold/italic markers but keep text
+    clean = clean.replace(/\*\*([^*]+)\*\*/g, '$1');
+    clean = clean.replace(/__([^_]+)__/g, '$1');
+    clean = clean.replace(/\*([^*]+)\*/g, '$1');
+    clean = clean.replace(/_([^_]+)_/g, '$1');
+    
+    // Remove heading markers
+    clean = clean.replace(/^#{1,6}\s+(.*)$/gm, '$1');
+    
+    // Remove blockquote markers
+    clean = clean.replace(/^>\s+/gm, '');
+    
+    // Remove horizontal rules
+    clean = clean.replace(/^-{3,}$/gm, '');
+    
+    // Clean up extra blank lines
+    clean = clean.replace(/\n{3,}/g, '\n\n');
+    
+    return clean.trim();
+  }
+
   // ── Chat panel component ───────────────────────────────────────────────────
   function ChatPanelFactory(system) {
     var React = system.React;
@@ -343,15 +489,19 @@
           copiedMessageId: null,
           headerHover: {},
           cancelToken: null,
+          copiedCodeBlock: null,
         };
         this.handleSend = this.handleSend.bind(this);
         this.handleInputChange = this.handleInputChange.bind(this);
         this.handleKeyDown = this.handleKeyDown.bind(this);
+        this.handleCancel = this.handleCancel.bind(this);
         this.clearHistory = this.clearHistory.bind(this);
         this.copyToClipboard = this.copyToClipboard.bind(this);
         this.renderTypingIndicator = this.renderTypingIndicator.bind(this);
         this.formatMessageContent = this.formatMessageContent.bind(this);
         this.setHeaderHover = this.setHeaderHover.bind(this);
+        this.renderMessage = this.renderMessage.bind(this);
+        this._copyTimeoutId = null;
         
         // Initialize marked.js
         initMarked();
@@ -359,6 +509,23 @@
 
       componentDidMount() {
         this.fetchOpenApiSchema();
+      }
+
+      componentWillUnmount() {
+        if (this._copyTimeoutId) {
+          clearTimeout(this._copyTimeoutId);
+        }
+      }
+
+      // Reset copied state periodically
+      componentDidUpdate(prevProps, prevState) {
+        if (prevState.copiedCodeBlock !== this.state.copiedCodeBlock && 
+            this.state.copiedCodeBlock !== null) {
+          if (this._copyTimeoutId) clearTimeout(this._copyTimeoutId);
+          this._copyTimeoutId = setTimeout(function() {
+            this.setState({ copiedCodeBlock: null });
+          }.bind(this), 2000);
+        }
       }
 
       fetchOpenApiSchema() {
@@ -371,7 +538,8 @@
             self.setState({ schemaSummary: summary, schemaLoading: false });
             dispatchAction(system, 'setOpenApiSchema', schema);
           })
-          .catch(function () {
+          .catch(function (err) {
+            console.warn('Failed to fetch OpenAPI schema:', err);
             self.setState({ schemaSummary: '', schemaLoading: false });
           });
       }
@@ -401,6 +569,12 @@
         }
       }
 
+      saveAccumulatedContent(accumulated) {
+        if (accumulated && accumulated.trim() && accumulated !== "*(cancelled)*") {
+          this.addMessage({ role: 'assistant', content: accumulated, timestamp: Date.now() });
+        }
+      }
+
       handleSend() {
         if (!this.state.input.trim() || this.state.isTyping) return;
 
@@ -408,16 +582,17 @@
         var userInput = this.state.input.trim();
         var streamTs = Date.now() + 1;
 
-        // Add user message to local state immediately
+        // Build API messages from current history + new user message before setState
         var userMsg = { role: 'user', content: userInput, timestamp: Date.now() };
+        var currentHistory = self.state.chatHistory || [];
+        var apiMessages = currentHistory.concat([userMsg]).map(function (m) {
+          return { role: m.role, content: m.content };
+        });
+
+        // Add user message to local state
         self.addMessage(userMsg);
         var cancelToken = new AbortController();
         self.setState({ input: "", isTyping: true, streamingContent: "", streamingTimestamp: streamTs, cancelToken: cancelToken });
-
-        // Build API messages from local state (includes the user message we just added)
-        var apiMessages = self.state.chatHistory.concat([userMsg]).map(function (m) {
-          return { role: m.role, content: m.content };
-        });
 
         var settings = loadFromStorage();
 
@@ -426,8 +601,10 @@
           if (el) el.scrollTop = el.scrollHeight;
         }
 
-        function finalize(content) {
-          self.addMessage({ role: 'assistant', content: content, timestamp: streamTs });
+        function finalize(content, saveContent) {
+          if (saveContent && content && content.trim() && content !== "*(cancelled)*") {
+            self.addMessage({ role: 'assistant', content: content, timestamp: streamTs });
+          }
           self.setState({ 
             isTyping: false, 
             streamingContent: null, 
@@ -436,6 +613,9 @@
           });
           setTimeout(scrollToBottom, 30);
         }
+
+        // Track accumulated content at handleSend scope so cancel/catch can access it
+        var accumulated = "";
 
         fetch("/llm-chat", {
           method: "POST",
@@ -459,17 +639,16 @@
             }
             var reader = res.body.getReader();
             var decoder = new TextDecoder();
-            var accumulated = "";
             var buffer = "";
 
             function processChunk() {
               return reader.read().then(function (result) {
                 if (cancelToken.signal.aborted) {
-                  finalize("Stream cancelled by user.");
+                  finalize(accumulated, true);
                   return;
                 }
                 if (result.done) {
-                  finalize(accumulated || "Sorry, I couldn't get a response.");
+                  finalize(accumulated || "Sorry, I couldn't get a response.", true);
                   return;
                 }
 
@@ -490,7 +669,7 @@
                   try {
                     var chunk = JSON.parse(payload);
                     if (chunk.error) {
-                      finalize("Error: " + chunk.error + (chunk.details ? ": " + chunk.details : ""));
+                      finalize("Error: " + chunk.error + (chunk.details ? ": " + chunk.details : ""), false);
                       return;
                     }
                     if (chunk.choices && chunk.choices[0] && chunk.choices[0].delta && chunk.choices[0].delta.content) {
@@ -511,9 +690,9 @@
           })
           .catch(function (err) {
             if (err.name === 'AbortError') {
-              finalize("Stream cancelled by user.");
+              finalize(accumulated, true);
             } else {
-              finalize("Error: " + (err.message || "Request failed"));
+              finalize("Error: " + (err.message || "Request failed"), false);
             }
           });
 
@@ -532,14 +711,19 @@
 
       copyToClipboard(text) {
         if (!text || !navigator.clipboard) return;
-        
-        navigator.clipboard.writeText(text).then(function () {
-          var self = this;
+        var self = this;
+
+        // Extract code blocks from markdown content
+        var textToCopy = extractCodeBlocks(text);
+
+        navigator.clipboard.writeText(textToCopy).then(function () {
           self.setState({ copiedMessageId: Date.now() });
-          setTimeout(function () {
+          if (self._copyTimeoutId) clearTimeout(self._copyTimeoutId);
+          self._copyTimeoutId = setTimeout(function () {
+            self._copyTimeoutId = null;
             self.setState({ copiedMessageId: null });
           }, 2000);
-        }.bind(this)).catch(function (err) {
+        }).catch(function (err) {
           console.error('Failed to copy:', err);
         });
       }
@@ -583,8 +767,8 @@
               "div",
               { 
                 className: "llm-chat-message-header",
-                onMouseEnter: function() { self.setHeaderHover(true); },
-                onMouseLeave: function() { self.setHeaderHover(false); }
+                onMouseEnter: function() { self.setHeaderHover(msg.timestamp, true); },
+                onMouseLeave: function() { self.setHeaderHover(msg.timestamp, false); }
               },
               isUser 
                 ? React.createElement("span", { className: "llm-user-label" }, "You")
@@ -634,6 +818,37 @@
         });
       }
 
+      // Enhanced copy button for code blocks within chat messages
+      renderCodeBlockWithCopy(language, code) {
+        var React = system.React;
+        var self = this;
+        
+        return React.createElement(
+          "div",
+          { className: "llm-code-block-wrapper", style: styles.codeBlock },
+          React.createElement(
+            "div",
+            { className: "code-block-header" },
+            React.createElement("span", { className: "code-block-label" }, language || "code"),
+            React.createElement(
+              "button",
+              {
+                className: "code-block-copy",
+                onClick: function() { 
+                  navigator.clipboard.writeText(code);
+                  self.setState({ copiedCodeBlock: Date.now() });
+                },
+                title: "Copy code"
+              },
+              self.state.copiedCodeBlock ? "✅ Copied" : "📋 Copy"
+            )
+          ),
+          React.createElement("pre", { style: { margin: 0, overflowX: "auto" } },
+            React.createElement("code", null, code)
+          )
+        );
+      }
+
       render() {
         var React = system.React;
         var self = this;
@@ -652,7 +867,7 @@
                   "Ask questions about your API!\n\nExamples:\n\u2022 What endpoints are available?\n\u2022 How do I use the chat completions endpoint?\n\u2022 Generate a curl command for /health"
                 )
               : [].concat(
-                  chatHistory.map(this.renderMessage.bind(this)),
+                  chatHistory.map(this.renderMessage),
                   this.state.streamingContent != null
                     ? [this.renderMessage({
                         role: 'assistant',
@@ -665,7 +880,7 @@
           this.state.isTyping && !this.state.streamingContent
             ? React.createElement(
                 "div",
-                { style: { padding: "8px 12px", color: "#9ca3af", fontSize: "12px" } },
+                { style: { padding: "8px 12px", color: "var(--theme-text-secondary)", fontSize: "12px" } },
                 this.renderTypingIndicator()
               )
             : null,
@@ -734,6 +949,8 @@
           maxTokens: s.maxTokens != null && s.maxTokens !== '' ? s.maxTokens : DEFAULT_STATE.maxTokens,
           temperature: s.temperature != null && s.temperature !== '' ? s.temperature : DEFAULT_STATE.temperature,
           provider: s.provider || DEFAULT_STATE.provider,
+          theme: storedTheme.theme || DEFAULT_STATE.theme,
+          customColors: storedTheme.customColors || DEFAULT_STATE.customColors,
           connectionStatus: "disconnected",
           settingsOpen: false,
           lastError: "",
@@ -741,6 +958,23 @@
         this.handleSaveSettings = this.handleSaveSettings.bind(this);
         this.handleTestConnection = this.handleTestConnection.bind(this);
         this.toggleOpen = this.toggleOpen.bind(this);
+        this.handleProviderChange = this.handleProviderChange.bind(this);
+        this.handleBaseUrlChange = this.handleBaseUrlChange.bind(this);
+        this.handleApiKeyChange = this.handleApiKeyChange.bind(this);
+        this.handleModelIdChange = this.handleModelIdChange.bind(this);
+        this.handleMaxTokensChange = this.handleMaxTokensChange.bind(this);
+        this.handleTemperatureChange = this.handleTemperatureChange.bind(this);
+        this.handleThemeChange = this.handleThemeChange.bind(this);
+
+        // Apply theme on mount
+        window.applyLLMTheme(this.state.theme, this.state.customColors);
+      }
+
+      componentDidMount() {
+        // Reload theme from localStorage in case it changed (e.g., tab switch)
+        var stored = loadTheme();
+        this.setState({ theme: stored.theme, customColors: stored.customColors });
+        window.applyLLMTheme(stored.theme, stored.customColors);
       }
 
       handleSaveSettings() {
@@ -753,7 +987,16 @@
           provider: this.state.provider,
         };
         saveToStorage(settings);
+        // Also ensure current theme is persisted to localStorage
+        saveTheme({ theme: this.state.theme, customColors: this.state.customColors });
         // Don't change connection status, just save
+      }
+
+      componentDidUpdate(prevProps, prevState) {
+        // Apply theme when theme or colors change
+        if (prevState.theme !== this.state.theme || prevState.customColors !== this.state.customColors) {
+          window.applyLLMTheme(this.state.theme, this.state.customColors);
+        }
       }
 
       handleTestConnection() {
@@ -836,6 +1079,22 @@
         dispatchAction(system, 'setTemperature', e.target.value);
       }
 
+      handleThemeChange(e) {
+        var value = e.target.value;
+        this.setState({ theme: value });
+        dispatchAction(system, 'setTheme', value);
+      }
+
+      handleColorChange(colorKey, e) {
+        var value = e.target.value;
+        this.setState(function (prev) {
+          var newColors = Object.assign({}, prev.customColors || {});
+          newColors[colorKey] = value;
+          return { customColors: newColors };
+        });
+        dispatchAction(system, 'setCustomColor', { key: colorKey, value: value });
+      }
+
       render() {
         var self = this;
         var s = this.state;
@@ -844,19 +1103,19 @@
         var statusEmoji = STATUS_EMOJI[s.connectionStatus] || "⚪";
         var provider = LLM_PROVIDERS[s.provider] || LLM_PROVIDERS.custom;
 
-        // Input styling
+        // Input styling (theme-aware)
         var inputStyle = {
-          background: "#1f2937",
-          border: "1px solid #374151",
+          background: "var(--theme-input-bg)",
+          border: "1px solid var(--theme-border-color)",
           borderRadius: "4px",
-          color: "#e5e7eb",
+          color: "var(--theme-text-primary)",
           padding: "6px 10px",
           width: "100%",
           boxSizing: "border-box",
           fontSize: "13px",
         };
 
-        var labelStyle = { color: "#9ca3af", fontSize: "12px", marginBottom: "4px", display: "block" };
+        var labelStyle = { color: "var(--theme-text-secondary)", fontSize: "12px", marginBottom: "4px", display: "block" };
         var fieldStyle = { marginBottom: "12px" };
 
         // Provider preset dropdown
@@ -877,17 +1136,17 @@
             "select",
             {
               value: s.provider,
-              onChange: this.handleProviderChange.bind(this),
+              onChange: this.handleProviderChange,
               style: inputStyle
             },
             providerOptions
           )
         );
 
-        // Provider badge
+        // Provider badge (no inline color overrides — CSS classes handle colors)
         var providerBadge = React.createElement(
           "span",
-          { className: "llm-provider-badge llm-provider-" + (s.provider === 'custom' ? 'openai' : s.provider), style: { fontSize: "10px", padding: "2px 8px", background: "#374151", borderRadius: "10px", color: "#9ca3af", marginLeft: "8px" } },
+          { className: "llm-provider-badge llm-provider-" + (s.provider === 'custom' ? 'openai' : s.provider), style: { fontSize: "10px", padding: "2px 8px", borderRadius: "10px", marginLeft: "8px" } },
           provider.name
         );
 
@@ -903,11 +1162,11 @@
               type: "text",
               value: s.baseUrl,
               style: Object.assign({}, inputStyle, { flex: 1 }),
-              onChange: this.handleBaseUrlChange.bind(this),
+              onChange: this.handleBaseUrlChange,
             }),
             provider.name !== 'Custom' && React.createElement(
               "span",
-              { style: { marginLeft: "8px", fontSize: "10px", color: "#6b7280" } },
+              { style: { marginLeft: "8px", fontSize: "10px", color: "var(--theme-text-secondary)" } },
               provider.url
             )
           )
@@ -927,7 +1186,7 @@
               value: s.apiKey,
               placeholder: "sk-...",
               style: inputStyle,
-              onChange: this.handleApiKeyChange.bind(this),
+              onChange: this.handleApiKeyChange,
             })
           ),
           React.createElement(
@@ -938,7 +1197,7 @@
               type: "text",
               value: s.modelId,
               style: inputStyle,
-              onChange: this.handleModelIdChange.bind(this),
+              onChange: this.handleModelIdChange,
             })
           ),
           React.createElement(
@@ -951,7 +1210,7 @@
               min: 1,
               placeholder: "4096",
               style: inputStyle,
-              onChange: this.handleMaxTokensChange.bind(this),
+              onChange: this.handleMaxTokensChange,
             })
           ),
           React.createElement(
@@ -966,7 +1225,68 @@
               step: 0.1,
               placeholder: "0.7",
               style: inputStyle,
-              onChange: this.handleTemperatureChange.bind(this),
+              onChange: this.handleTemperatureChange,
+            })
+          )
+        );
+
+        // Theme settings fields
+        var themeConfig = React.createElement(
+          "div",
+          { style: fieldStyle },
+          React.createElement("label", { style: labelStyle }, "Theme"),
+          React.createElement(
+            "select",
+            {
+              value: s.theme,
+              onChange: this.handleThemeChange,
+              style: inputStyle
+            },
+            Object.keys(THEME_DEFINITIONS).map(function (key) {
+              return React.createElement(
+                "option",
+                { key: key, value: key },
+                THEME_DEFINITIONS[key].name
+              );
+            })
+          )
+        );
+
+        // Color picker fields
+        var colorFields = React.createElement(
+          "div",
+          { style: { display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "12px" } },
+          React.createElement(
+            "div",
+            { style: fieldStyle },
+            React.createElement("label", { style: labelStyle }, "Primary"),
+            React.createElement("input", {
+              type: "color",
+              value: s.customColors.primary || THEME_DEFINITIONS[s.theme].primary,
+              onChange: this.handleColorChange.bind(this, 'primary'),
+              style: { width: "60px", height: "32px", border: "none", cursor: "pointer" }
+            })
+          ),
+          React.createElement(
+            "div",
+            { style: fieldStyle },
+            React.createElement("label", { style: labelStyle }, "Background"),
+            React.createElement("input", {
+              type: "color",
+              value: s.customColors.background || THEME_DEFINITIONS[s.theme].background,
+              onChange: this.handleColorChange.bind(this, 'background'),
+              style: { width: "60px", height: "32px", border: "none", cursor: "pointer" }
+            })
+          ),
+          React.createElement(
+            "div",
+            { style: fieldStyle },
+            React.createElement("label", { style: labelStyle }, "Text Primary"),
+            React.createElement("input", {
+              type: "color",
+              value: s.customColors.textPrimary || THEME_DEFINITIONS[s.theme].textPrimary,
+              onChange: this.handleColorChange.bind(this, 'textPrimary'),
+              style: { width: "60px", height: "32px", border: "none", cursor: "pointer" }
             })
           )
         );
@@ -976,7 +1296,7 @@
           {
             onClick: this.handleSaveSettings,
             style: {
-              background: "#2563eb",
+              background: "var(--theme-primary)",
               color: "#fff",
               border: "none",
               borderRadius: "4px",
@@ -994,7 +1314,7 @@
           {
             onClick: this.handleTestConnection,
             style: {
-              background: "#4b5563",
+              background: "var(--theme-accent)",
               color: "#fff",
               border: "none",
               borderRadius: "4px",
@@ -1013,7 +1333,7 @@
             style: {
               marginLeft: "12px",
               fontSize: "13px",
-              color: s.connectionStatus === "error" ? "#f87171" : "#9ca3af",
+              color: s.connectionStatus === "error" ? "#f87171" : "var(--theme-text-secondary)",
               verticalAlign: "middle",
             },
           },
@@ -1034,13 +1354,34 @@
         // When used as a tab, render the full panel without collapsible header
         var bodyContent = React.createElement(
           "div",
-          { style: { padding: "16px", background: "#1f2937" } },
-          fields,
+          { style: { padding: "16px", background: "var(--theme-panel-bg)" } },
           React.createElement(
             "div",
-            { style: { display: "flex", alignItems: "center", marginTop: "8px" } },
+            { style: { marginBottom: "24px", paddingBottom: "20px", borderBottom: "1px solid var(--theme-border-color)" } },
+            React.createElement("h3", { style: { color: "var(--theme-text-primary)", fontSize: "14px", fontWeight: "600", marginBottom: "12px" } }, "LLM Configuration"),
+            fields
+          ),
+          React.createElement(
+            "div",
+            { style: { marginBottom: "24px", paddingBottom: "20px", borderBottom: "1px solid var(--theme-border-color)" } },
+            React.createElement("h3", { style: { color: "var(--theme-text-primary)", fontSize: "14px", fontWeight: "600", marginBottom: "12px" } }, "Theme Settings"),
+            React.createElement(
+              "div",
+              { style: { display: "grid", gridTemplateColumns: "1fr 3fr", gap: "12px" } },
+              themeConfig,
+              React.createElement(
+                "div",
+                null,
+                colorFields
+              )
+            )
+          ),
+          React.createElement(
+            "div",
+            { style: { display: "flex", alignItems: "center" } },
             saveButton,
             testButton,
+            React.createElement("div", { style: { flex: 1 } }),
             statusBadge
           )
         );
@@ -1060,7 +1401,7 @@
     };
   }
 
-  // ── CSS styles object ───────────────────────────────────────────────────────
+  // ── CSS styles object (uses CSS variables for theme support) ────────────────
   var styles = {
     chatContainer: {
       display: "flex",
@@ -1085,29 +1426,19 @@
       borderRadius: "12px",
       maxWidth: "85%",
     },
-    chatMessageUser: {
-      alignSelf: "flex-end",
-      background: "#2563eb",
-      color: "#fff",
-    },
-    chatMessageAssistant: {
-      alignSelf: "flex-start",
-      background: "#374151",
-      color: "#e5e7eb",
-    },
     chatMessageHeader: {
       fontSize: "10px",
       marginBottom: "6px",
       opacity: 0.8,
     },
     chatMessageContent: {
-      fontSize: "13px",
+      fontSize: "15px",
       lineHeight: "1.6",
     },
     copyMessageBtn: {
       background: "transparent",
       border: "none",
-      color: "#9ca3af",
+      color: "var(--theme-text-secondary)",
       fontSize: "14px",
       cursor: "pointer",
       padding: "2px 6px",
@@ -1115,21 +1446,18 @@
       opacity: 0,
       transition: "opacity 0.2s ease, color 0.2s ease",
     },
-    chatMessageWrapperHover: {
-      display: "contents",
-    },
     chatInputArea: {
-      borderTop: "1px solid #374151",
+      borderTop: "1px solid var(--theme-border-color)",
       padding: "12px",
     },
     chatInput: {
       width: "100%",
-      background: "#1f2937",
-      border: "1px solid #374151",
+      background: "var(--theme-input-bg)",
+      border: "1px solid var(--theme-border-color)",
       borderRadius: "4px",
-      color: "#e5e7eb",
+      color: "var(--theme-text-primary)",
       padding: "8px 10px",
-      fontSize: "13px",
+      fontSize: "14px",
       resize: "none",
       fontFamily: "'Inter', sans-serif",
     },
@@ -1140,7 +1468,7 @@
       marginTop: "8px",
     },
     smallButton: {
-      background: "#4b5563",
+      background: "var(--theme-accent)",
       color: "#fff",
       border: "none",
       borderRadius: "4px",
@@ -1149,7 +1477,7 @@
       fontSize: "10px",
     },
     sendButton: {
-      background: "#2563eb",
+      background: "var(--theme-primary)",
       color: "#fff",
       border: "none",
       borderRadius: "4px",
@@ -1159,47 +1487,55 @@
     },
     emptyChat: {
       textAlign: "center",
-      color: "#9ca3af",
+      color: "var(--theme-text-secondary)",
       padding: "40px 20px",
-      fontSize: "13px",
+      fontSize: "15px",
       whiteSpace: "pre-line",
     },
     codeBlock: {
-      background: "#1f2937",
-      borderRadius: "6px",
+      background: "var(--theme-input-bg)",
+      borderRadius: "8px",
       padding: "12px",
       overflowX: "auto",
       margin: "8px 0",
-      fontSize: "12px",
+      fontSize: "14px",
       fontFamily: "'Consolas', 'Monaco', monospace",
+    },
+    codeBlockWrapper: {
+      background: "var(--theme-input-bg)",
+      borderRadius: "8px",
+      overflow: "hidden",
+      margin: "12px 0",
+      border: "1px solid var(--theme-border-color)",
     },
     codeBlockHeader: {
       display: "flex",
       justifyContent: "space-between",
       alignItems: "center",
       marginBottom: "8px",
-      color: "#9ca3af",
-      fontSize: "11px",
+      color: "var(--theme-text-secondary)",
+      fontSize: "12px",
     },
     codeCopyBtn: {
-      background: "#374151",
+      background: "var(--theme-secondary)",
       border: "none",
-      color: "#e5e7eb",
-      padding: "4px 8px",
+      color: "var(--theme-text-primary)",
+      padding: "6px 12px",
       borderRadius: "4px",
       cursor: "pointer",
-      fontSize: "10px",
+      fontSize: "11px",
+      transition: "all 0.2s ease",
     },
     codeCopySuccess: {
-      background: "#10b981",
-      color: "#fff",
+      background: "#10b981 !important",
+      color: "white !important",
     },
     typingIndicator: {
       display: "inline-flex",
       alignItems: "center",
       gap: "4px",
       padding: "8px 12px",
-      background: "#374151",
+      background: "var(--theme-secondary)",
       borderRadius: "18px",
       fontSize: "12px",
     },
@@ -1207,88 +1543,88 @@
       width: "6px",
       height: "6px",
       borderRadius: "50%",
-      background: "#9ca3af",
+      background: "var(--theme-text-secondary)",
       animation: "typing 1.4s infinite ease-in-out both",
     },
     typingDot1: { animationDelay: "-0.32s" },
     typingDot2: { animationDelay: "-0.16s" },
   };
 
-  // ── CSS styles for chat bubbles, avatars, and animations ───────────────────
+  // ── CSS styles for chat bubbles, avatars, and animations (theme-aware) ─────
   var chatStyles = [
     // Chat message wrapper styles
     '.llm-chat-message-wrapper { display: flex; width: 100%; margin-bottom: 8px; }',
-    
+
     // Message bubble styles
     '.llm-chat-message { padding: 10px 14px; border-radius: 12px; max-width: 85%; position: relative; }',
-    '.llm-chat-message.user { align-self: flex-end; background: #2563eb; color: white; }',
-    '.llm-chat-message.assistant { align-self: flex-start; background: #374151; color: #e5e7eb; }',
-    
+    '.llm-chat-message.user { align-self: flex-end; background: var(--theme-primary); color: white; }',
+    '.llm-chat-message.assistant { align-self: flex-start; background: var(--theme-secondary); color: var(--theme-text-primary); }',
+
     // Avatar styles
     '.llm-avatar { width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 18px; margin-right: 8px; flex-shrink: 0; }',
     '.assistant-avatar { background: linear-gradient(135deg, #6366f1, #8b5cf6); }',
     '.llm-chat-message.assistant .llm-avatar { margin-right: 8px; }',
-    
+
     // Message header (user/assistant label + time)
     '.llm-chat-message-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; font-size: 11px; opacity: 0.9; }',
-    '.llm-user-label { font-weight: 600; color: #e5e7eb; }',
+    '.llm-user-label { font-weight: 600; color: var(--theme-text-primary); }',
     '.llm-assistant-label { font-weight: 600; color: #8b5cf6; }',
     '.llm-chat-message-time { opacity: 0.7; font-size: 10px; }',
-    
+
     // Copy button on messages
-    '.llm-copy-btn { background: transparent; border: none; color: #9ca3af; font-size: 14px; cursor: pointer; padding: 2px 6px; border-radius: 4px; transition: all 0.2s ease; margin-left: 8px; }',
-    '.llm-copy-btn:hover { background: #4b5563; color: white; transform: scale(1.1); }',
-    
-    // Chat input area
-    '.llm-chat-message-text { font-size: 13px; line-height: 1.6; word-wrap: break-word; }',
+    '.llm-copy-btn { background: transparent; border: none; color: var(--theme-text-secondary); font-size: 14px; cursor: pointer; padding: 2px 6px; border-radius: 4px; transition: all 0.2s ease; margin-left: 8px; }',
+    '.llm-copy-btn:hover { background: var(--theme-accent); color: white; transform: scale(1.1); }',
+
+    // Chat message text
+    '.llm-chat-message-text { font-size: 15px; line-height: 1.6; word-wrap: break-word; }',
     '.llm-chat-message-text p { margin: 8px 0; }',
     '.llm-chat-message-text p:first-child { margin-top: 4px; }',
     '.llm-chat-message-text p:last-child { margin-bottom: 4px; }',
-    
+
     // Markdown content in messages
-    '.llm-chat-message-text strong { color: #e5e7eb; }',
-    '.llm-chat-message-text em { font-style: italic; color: #d1d5db; }',
+    '.llm-chat-message-text strong { color: var(--theme-text-primary); }',
+    '.llm-chat-message-text em { font-style: italic; }',
     '.llm-chat-message-text ul { margin: 8px 0; padding-left: 24px; }',
     '.llm-chat-message-text ol { margin: 8px 0; padding-left: 24px; }',
     '.llm-chat-message-text li { margin: 4px 0; }',
-    '.llm-chat-message-text blockquote { border-left: 3px solid #6b7280; margin: 8px 0; padding-left: 12px; opacity: 0.9; }',
+    '.llm-chat-message-text blockquote { border-left: 3px solid var(--theme-accent); margin: 8px 0; padding-left: 12px; opacity: 0.9; }',
     '.llm-chat-message-text a { color: #60a5fa; text-decoration: none; }',
     '.llm-chat-message-text a:hover { text-decoration: underline; }',
-    
+
     // Code blocks in messages
-    '.llm-chat-message-text pre { background: #1f2937; border-radius: 8px; padding: 12px; overflow-x: auto; margin: 10px 0; font-family: "Consolas", "Monaco", monospace; font-size: 12px; position: relative; }',
-    '.llm-chat-message-text code { font-family: "Consolas", "Monaco", monospace; background: rgba(0,0,0,0.3); padding: 2px 6px; border-radius: 4px; font-size: 12px; }',
+    '.llm-chat-message-text pre { background: var(--theme-input-bg); border-radius: 8px; padding: 12px; overflow-x: auto; margin: 10px 0; font-family: "Consolas", "Monaco", monospace; font-size: 14px; position: relative; }',
+    '.llm-chat-message-text code { font-family: "Consolas", "Monaco", monospace; background: rgba(0,0,0,0.15); padding: 2px 6px; border-radius: 4px; font-size: 13px; }',
     '.llm-chat-message-text pre code { background: transparent; padding: 0; }',
-    
+
     // Code block header with copy button
-    '.code-block-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid #374151; }',
-    '.code-block-label { color: #9ca3af; font-size: 11px; font-weight: 600; }',
-    '.code-block-copy { background: #374151; border: none; color: #e5e7eb; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 10px; transition: all 0.2s; }',
-    '.code-block-copy:hover { background: #4b5563; color: white; }',
+    '.code-block-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--theme-border-color); }',
+    '.code-block-label { color: var(--theme-text-secondary); font-size: 12px; font-weight: 600; }',
+    '.code-block-copy { background: var(--theme-secondary); border: none; color: var(--theme-text-primary); padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 11px; transition: all 0.2s; }',
+    '.code-block-copy:hover { background: var(--theme-accent); color: white; }',
     '.code-block-copy.copied { background: #10b981 !important; color: white; }',
-    
+
     // Scrollbar styling
     '#llm-chat-messages::-webkit-scrollbar { width: 8px; }',
-    '#llm-chat-messages::-webkit-scrollbar-track { background: #1f2937; border-radius: 4px; }',
-    '#llm-chat-messages::-webkit-scrollbar-thumb { background: #374151; border-radius: 4px; }',
-    '#llm-chat-messages::-webkit-scrollbar-thumb:hover { background: #4b5563; }',
-    
+    '#llm-chat-messages::-webkit-scrollbar-track { background: var(--theme-panel-bg); border-radius: 4px; }',
+    '#llm-chat-messages::-webkit-scrollbar-thumb { background: var(--theme-secondary); border-radius: 4px; }',
+    '#llm-chat-messages::-webkit-scrollbar-thumb:hover { background: var(--theme-accent); }',
+
     // Typing indicator animation
     '@keyframes typing { 0%, 80%, 100% { transform: scale(0); } 40% { transform: scale(1); } }',
-    '.llm-typing-indicator { display: inline-flex; align-items: center; gap: 4px; padding: 8px 12px; background: #374151; border-radius: 18px; font-size: 12px; margin-bottom: 8px; }',
-    '.llm-typing-dot { width: 6px; height: 6px; border-radius: 50%; background: #9ca3af; animation: typing 1.4s infinite ease-in-out both; }',
+    '.llm-typing-indicator { display: inline-flex; align-items: center; gap: 4px; padding: 8px 12px; background: var(--theme-secondary); border-radius: 18px; font-size: 14px; margin-bottom: 8px; }',
+    '.llm-typing-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--theme-text-secondary); animation: typing 1.4s infinite ease-in-out both; }',
     '.llm-typing-dot:nth-child(1) { animation-delay: -0.32s; }',
     '.llm-typing-dot:nth-child(2) { animation-delay: -0.16s; }',
-    
+
     // Mobile responsive styles
     '@media (max-width: 768px) {',
     '  .llm-chat-message-wrapper { width: 100%; padding: 0 8px; }',
     '  .llm-chat-message { max-width: 92%; padding: 10px 12px; }',
     '  .llm-avatar { width: 28px; height: 28px; font-size: 16px; }',
-    '  .llm-chat-message-text { font-size: 14px; }',
-    '  .llm-typing-indicator { font-size: 13px; padding: 10px 14px; }',
+    '  .llm-chat-message-text { font-size: 15px; }',
+    '  .llm-typing-indicator { font-size: 14px; padding: 10px 14px; }',
     '}',
-    
+
     // Chat container responsive
     '@media (max-width: 768px) {',
     '  .llm-chat-container { height: calc(100vh - 160px) !important; max-height: none !important; }',
@@ -1321,5 +1657,43 @@
         ChatPanel: ChatPanelFactory(system),
       },
     };
+  };
+
+  // ── Theme injection function ────────────────────────────────────────────────
+  window.applyLLMTheme = function (themeName, customColors) {
+    var themeDef = THEME_DEFINITIONS[themeName] || THEME_DEFINITIONS.dark;
+
+    // Merge custom colors with theme defaults
+    var finalColors = Object.assign({}, themeDef, customColors);
+
+    // Build CSS variables string
+    var cssVars = [
+      '--theme-primary: ' + finalColors.primary,
+      '--theme-primary-hover: ' + (finalColors.primaryHover || finalColors.primary),
+      '--theme-secondary: ' + finalColors.secondary,
+      '--theme-accent: ' + finalColors.accent,
+      '--theme-background: ' + finalColors.background,
+      '--theme-panel-bg: ' + (finalColors.panelBg || finalColors.secondary),
+      '--theme-header-bg: ' + (finalColors.headerBg || finalColors.background),
+      '--theme-border-color: ' + (finalColors.borderColor || finalColors.secondary),
+      '--theme-text-primary: ' + finalColors.textPrimary,
+      '--theme-text-secondary: ' + (finalColors.textSecondary || '#6b7280'),
+      '--theme-input-bg: ' + (finalColors.inputBg || finalColors.secondary),
+      '--theme-provider-openai: #10a37f',
+      '--theme-provider-anthropic: #d97757',
+      '--theme-provider-ollama: #2b90d8',
+      '--theme-provider-vllm: #facc15',
+      '--theme-provider-azure: #0078d4',
+    ].join('; ');
+
+    // Update existing theme style element or create new one
+    var themeStyle = document.getElementById('swagger-llm-theme-styles');
+    if (!themeStyle) {
+      themeStyle = document.createElement('style');
+      themeStyle.id = 'swagger-llm-theme-styles';
+      document.head.appendChild(themeStyle);
+    }
+
+    themeStyle.textContent = ':root { ' + cssVars + ' }';
   };
 })();
