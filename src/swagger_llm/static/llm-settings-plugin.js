@@ -12,8 +12,41 @@
     lmstudio: { name: 'LM Studio', url: 'http://localhost:1234/v1' },
     vllm: { name: 'vLLM', url: 'http://localhost:8000/v1' },
     azure: { name: 'Azure OpenAI', url: 'https://YOUR_RESOURCE_NAME.openai.azure.com/openai/deployments/YOUR_DEPLOYMENT' },
+    transformersjs: { name: 'Transformers.js (In-Browser)', url: '', defaultModel: 'ibm-granite/granite-4.0-h-350m' },
     custom: { name: 'Custom', url: '' }
   };
+
+  // ── Transformers.js in-browser inference ──────────────────────────────────
+  var _transformersPipeline = null;
+  var _transformersModelId = null;
+  var _transformersLoading = false;
+
+  function getTransformersPipeline(modelId, progressCallback) {
+    if (_transformersPipeline && _transformersModelId === modelId) {
+      return Promise.resolve(_transformersPipeline);
+    }
+    if (_transformersLoading) {
+      return Promise.reject(new Error('Model is already loading, please wait...'));
+    }
+    _transformersLoading = true;
+    return import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3')
+      .then(function (transformers) {
+        return transformers.pipeline('text-generation', modelId, {
+          dtype: 'fp32',
+          progress_callback: progressCallback
+        });
+      })
+      .then(function (pipe) {
+        _transformersPipeline = pipe;
+        _transformersModelId = modelId;
+        _transformersLoading = false;
+        return pipe;
+      })
+      .catch(function (err) {
+        _transformersLoading = false;
+        throw err;
+      });
+  }
 
   // ── Markdown parser initialization (marked.js) ────────────────────────────
   var marked = null;
@@ -270,10 +303,14 @@
         return Object.assign({}, state, { connectionStatus: action.payload });
       case SET_PROVIDER:
         var provider = LLM_PROVIDERS[action.payload] || LLM_PROVIDERS.custom;
-        return Object.assign({}, state, {
+        var providerState = {
           provider: action.payload,
           baseUrl: provider.url
-        });
+        };
+        if (provider.defaultModel) {
+          providerState.modelId = provider.defaultModel;
+        }
+        return Object.assign({}, state, providerState);
       case SET_SETTINGS_OPEN:
         return Object.assign({}, state, { settingsOpen: action.payload });
       case ADD_CHAT_MESSAGE:
@@ -620,7 +657,55 @@
         };
 
         var fullSchema = getOpenApiSchema();
-        
+
+        // ── Transformers.js in-browser inference path ──────────────────────
+        if (settings.provider === 'transformersjs') {
+          var modelId = settings.modelId || LLM_PROVIDERS.transformersjs.defaultModel;
+          var maxTokens = (settings.maxTokens != null && settings.maxTokens !== '') ? Number(settings.maxTokens) : 200;
+
+          // Show loading status while model downloads
+          self.addMessage({ role: 'assistant', content: 'Loading model in browser...', messageId: streamMsgId });
+
+          getTransformersPipeline(modelId, function (progress) {
+            if (progress && progress.status === 'progress' && progress.progress != null) {
+              var pct = Math.round(progress.progress) + '%';
+              self.addMessage({ role: 'assistant', content: 'Downloading model: ' + pct, messageId: streamMsgId });
+            }
+          })
+            .then(function (generator) {
+              // Build a simple prompt from messages
+              var prompt = apiMessages.map(function (m) {
+                return m.role + ': ' + m.content;
+              }).join('\n') + '\nassistant:';
+
+              return generator(prompt, {
+                max_new_tokens: maxTokens,
+                temperature: (settings.temperature != null && settings.temperature !== '') ? Number(settings.temperature) : 0.7,
+                do_sample: true,
+              });
+            })
+            .then(function (output) {
+              var generated = '';
+              if (Array.isArray(output) && output.length > 0 && output[0].generated_text) {
+                generated = output[0].generated_text;
+                // Remove the prompt prefix if present
+                var promptSuffix = 'assistant:';
+                var idx = generated.lastIndexOf(promptSuffix);
+                if (idx !== -1) {
+                  generated = generated.substring(idx + promptSuffix.length).trim();
+                }
+              }
+              finalize(generated || 'No response generated.', true);
+            })
+            .catch(function (err) {
+              finalize('Error: ' + (err.message || 'In-browser inference failed'), false);
+            });
+
+          setTimeout(scrollToBottom, 50);
+          return;
+        }
+
+        // ── Remote LLM API path ────────────────────────────────────────────
         fetch("/llm-chat", {
           method: "POST",
           headers: {
@@ -1060,7 +1145,11 @@
       handleProviderChange(e) {
         var value = e.target.value;
         var provider = LLM_PROVIDERS[value] || LLM_PROVIDERS.custom;
-        this.setState({ provider: value, baseUrl: provider.url });
+        var newState = { provider: value, baseUrl: provider.url };
+        if (provider.defaultModel) {
+          newState.modelId = provider.defaultModel;
+        }
+        this.setState(newState);
         dispatchAction(system, 'setProvider', value);
       }
 

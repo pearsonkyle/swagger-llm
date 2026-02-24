@@ -124,7 +124,7 @@ def test_provider_presets_available():
     js_content = client.get("/swagger-llm-static/llm-settings-plugin.js").text
     
     # Check for provider configurations
-    providers = ["openai", "anthropic", "ollama", "lmstudio", "vllm"]
+    providers = ["openai", "anthropic", "ollama", "lmstudio", "vllm", "transformersjs"]
     for provider in providers:
         assert provider in js_content.lower() or provider.upper() in js_content
 
@@ -407,6 +407,48 @@ def test_provider_preset_vllm():
     # Check vLLM preset
     assert "vllm" in js_content.lower()
     assert "localhost:8000/v1" in js_content
+
+
+def test_provider_preset_transformersjs():
+    """Test Transformers.js (In-Browser) provider preset."""
+    client = TestClient(make_app())
+    js_content = client.get("/swagger-llm-static/llm-settings-plugin.js").text
+    
+    # Check Transformers.js preset exists with correct config
+    assert "transformersjs" in js_content
+    assert "Transformers.js (In-Browser)" in js_content
+    assert "ibm-granite/granite-4.0-h-350m" in js_content
+
+
+def test_transformersjs_in_browser_inference_path():
+    """Test that in-browser inference code path exists for Transformers.js."""
+    client = TestClient(make_app())
+    js_content = client.get("/swagger-llm-static/llm-settings-plugin.js").text
+    
+    # Check the in-browser inference path is present
+    assert "getTransformersPipeline" in js_content
+    assert "text-generation" in js_content
+    assert "@huggingface/transformers" in js_content
+    # Check the provider detection branch exists
+    assert "settings.provider === 'transformersjs'" in js_content
+
+
+def test_transformersjs_provider_badge_css():
+    """Test that the Transformers.js provider badge has CSS styling."""
+    client = TestClient(make_app())
+    html = client.get("/docs").text
+    
+    assert "llm-provider-transformersjs" in html
+
+
+def test_transformersjs_default_model_in_provider():
+    """Test that defaultModel is set on the transformersjs provider."""
+    client = TestClient(make_app())
+    js_content = client.get("/swagger-llm-static/llm-settings-plugin.js").text
+    
+    # Verify the defaultModel property is present for transformersjs
+    assert "defaultModel" in js_content
+    assert "ibm-granite/granite-4.0-h-350m" in js_content
 
 
 def test_concurrent_app_setup():
