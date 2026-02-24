@@ -23,7 +23,7 @@ _TEMPLATES_DIR = _PACKAGE_DIR / "templates"
 _route_lock = threading.Lock()
 
 # Track which apps have LLM docs setup to avoid duplicate routes
-_llm_apps: Set[str] = set()
+_llm_apps: Set[int] = set()
 
 
 class _LLMChatMessage(BaseModel):
@@ -33,7 +33,8 @@ class _LLMChatMessage(BaseModel):
 
 class LLMChatRequest(BaseModel):
     messages: List[_LLMChatMessage]
-    openapi_summary: str = ""
+    openapi_summary: Optional[str] = None
+    openapi_schema: Optional[Dict[str, Any]] = None  # Full OpenAPI schema
 
 
 def get_swagger_ui_html(
@@ -56,7 +57,7 @@ def get_swagger_ui_html(
         openapi_url: URL of the OpenAPI JSON schema.
         title: Page title.
         swagger_js_url: CDN URL for Swagger UI JS.
-        swagger_css_url: CDN URL for Swagger UI CSS.
+        swagger_css_url: CDN URL for the Swagger UI CSS.
         theme_css_url: URL for the theme CSS file.
         llm_settings_js_url: URL for the LLM settings plugin JS.
         llm_layout_js_url: URL for the LLM layout plugin JS.
@@ -80,6 +81,169 @@ def get_swagger_ui_html(
         llm_layout_js_url=llm_layout_js_url,
     )
     return HTMLResponse(html)
+
+
+def build_openapi_context(schema: Dict[str, Any]) -> str:
+    """Build a comprehensive OpenAPI schema context for LLM chat.
+    
+    Converts the full OpenAPI JSON schema into a human-readable format
+    that includes all endpoints, parameters, request bodies, and responses.
+    
+    Args:
+        schema: The OpenAPI JSON schema dictionary
+        
+    Returns:
+        A formatted string representation of the API documentation
+    """
+    if not schema or not isinstance(schema, dict):
+        return ""
+    
+    lines = []
+    
+    # API Info
+    info = schema.get("info", {})
+    lines.append("# API Information")
+    lines.append(f"## {info.get('title', 'Untitled API')}")
+    lines.append(f"Version: {info.get('version', 'N/A')}")
+    
+    description = info.get("description")
+    if description:
+        lines.append("")
+        lines.append("### Description")
+        lines.append(description)
+    
+    # Server URLs (if any)
+    servers = schema.get("servers", [])
+    if servers:
+        lines.append("")
+        lines.append("### Base URLs")
+        for server in servers:
+            url = server.get("url", "")
+            description = server.get("description", "")
+            if description:
+                lines.append(f"- {url} ({description})")
+            else:
+                lines.append(f"- {url}")
+    
+    # Paths (Endpoints)
+    paths = schema.get("paths", {})
+    if paths:
+        lines.append("")
+        lines.append("# API Endpoints")
+        
+        for path, path_item in paths.items():
+            if not isinstance(path_item, dict):
+                continue
+            
+            lines.append("")
+            lines.append(f"## `{path}`")
+            
+            # Get available methods for this path
+            for method in ["get", "post", "put", "patch", "delete", "head", "options"]:
+                if method not in path_item:
+                    continue
+                    
+                operation = path_item[method]
+                if not isinstance(operation, dict):
+                    continue
+                
+                verb = method.upper()
+                summary = operation.get("summary", "")
+                description = operation.get("description", "")
+                
+                lines.append(f"### {verb}")
+                if summary:
+                    lines.append(f"**Summary:** {summary}")
+                if description:
+                    lines.append(f"**Description:** {description}")
+                
+                # Tags
+                tags = operation.get("tags", [])
+                if tags:
+                    lines.append(f"**Tags:** {', '.join(tags)}")
+                
+                # Parameters
+                parameters = operation.get("parameters", [])
+                if parameters:
+                    lines.append("")
+                    lines.append("**Parameters:**")
+                    for param in parameters:
+                        if not isinstance(param, dict):
+                            continue
+                        name = param.get("name", "unknown")
+                        in_loc = param.get("in", "query")
+                        required = param.get("required", False)
+                        ptype = param.get("type", "string")
+                        desc = param.get("description", "")
+                        
+                        req_str = "[required]" if required else "[optional]"
+                        lines.append(f"- `{name}` ({in_loc}, {req_str}) - {desc}")
+                
+                # Request Body
+                request_body = operation.get("requestBody", {})
+                if request_body and isinstance(request_body, dict):
+                    content = request_body.get("content", {})
+                    if content:
+                        lines.append("")
+                        lines.append("**Request Body:**")
+                        for content_type, media_type in content.items():
+                            if not isinstance(media_type, dict):
+                                continue
+                            schema_def = media_type.get("schema", {})
+                            if schema_def and isinstance(schema_def, dict):
+                                lines.append(f"- Content-Type: `{content_type}`")
+                                # Brief description of schema structure
+                                if schema_def.get("type") == "object":
+                                    props = schema_def.get("properties", {})
+                                    if isinstance(props, dict) and len(props) > 0:
+                                        prop_names = list(props.keys())[:5]  # First 5 props
+                                        lines.append(f"- Properties: {', '.join(prop_names)}" + 
+                                                    ("..." if len(props) > 5 else ""))
+                
+                # Responses
+                responses = operation.get("responses", {})
+                if responses:
+                    lines.append("")
+                    lines.append("**Responses:**")
+                    for status_code, response in sorted(responses.items()):
+                        if not isinstance(response, dict):
+                            continue
+                        description = response.get("description", "No description")
+                        lines.append(f"- `{status_code}`: {description}")
+    
+    # Components/Schemas (definitions)
+    components = schema.get("components", {})
+    if components:
+        schemas = components.get("schemas", {})
+        if schemas:
+            lines.append("")
+            lines.append("# Data Models (Schemas)")
+            
+            for schema_name, schema_def in sorted(schemas.items())[:20]:  # Limit to first 20
+                if not isinstance(schema_def, dict):
+                    continue
+                    
+                lines.append("")
+                lines.append(f"## `{schema_name}`")
+                
+                description = schema_def.get("description", "")
+                if description:
+                    lines.append(f"*{description}*")
+                
+                properties = schema_def.get("properties", {})
+                if properties and isinstance(properties, dict):
+                    lines.append("")
+                    lines.append("**Properties:**")
+                    for prop_name, prop_def in list(properties.items())[:10]:  # First 10
+                        if not isinstance(prop_def, dict):
+                            continue
+                        ptype = prop_def.get("type", "any")
+                        preq = prop_def.get("required", False)
+                        pdesc = prop_def.get("description", "")
+                        req_str = "[required]" if preq else "[optional]"
+                        lines.append(f"- `{prop_name}` ({ptype}, {req_str}): {pdesc}")
+    
+    return "\n".join(lines)
 
 
 def setup_llm_docs(
@@ -125,9 +289,17 @@ def setup_llm_docs(
 
         # Filter routes while avoiding concurrent modification issues
         original_routes = list(app.router.routes)
+        
+        # Build set of paths to remove - handle potential None values
+        paths_to_remove = {docs_url}
+        if app.docs_url:
+            paths_to_remove.add(app.docs_url)
+        if app.redoc_url:
+            paths_to_remove.add(app.redoc_url)
+            
         app.router.routes = [
             r for r in original_routes
-            if not (isinstance(r, Route) and r.path in {docs_url, app.docs_url, app.redoc_url})
+            if not (isinstance(r, Route) and r.path in paths_to_remove)
         ]
         app.docs_url = None
         app.redoc_url = None
@@ -172,15 +344,28 @@ def setup_llm_docs(
 
         # Build messages with OpenAPI system context
         messages: List[Dict[str, str]] = []
-        if body.openapi_summary:
+        
+        # Build comprehensive OpenAPI context
+        openapi_context = ""
+        if body.openapi_schema:
+            # Use full schema if provided
+            openapi_context = build_openapi_context(body.openapi_schema)
+        elif body.openapi_summary:
+            # Fall back to summary if schema not provided
+            openapi_context = body.openapi_summary
+        
+        if openapi_context:
             messages.append({
                 "role": "system",
                 "content": (
                     "You are a helpful API assistant. The user is looking at an API "
-                    "documentation page. Here is a summary of the available API:\n\n"
-                    + body.openapi_summary
-                    + "\n\nHelp the user understand and use these endpoints. "
-                    "When appropriate, provide example curl commands or code snippets."
+                    "documentation page for an OpenAPI-compliant REST API. Here is the full "
+                    "OpenAPI schema/context for this API:\n\n"
+                    + openapi_context
+                    + "\n\nUse this schema to answer questions about the API. When appropriate, "
+                    "provide example curl commands or code snippets based on the endpoint definitions. "
+                    "If asked about a specific endpoint, refer to its parameters, request body, "
+                    "and response schemas defined in the OpenAPI spec."
                 ),
             })
         for msg in body.messages:

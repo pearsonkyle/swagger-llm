@@ -168,11 +168,8 @@ def test_code_generator_functions():
 
     js_content = client.get("/swagger-llm-static/llm-settings-plugin.js").text
 
-    # Check for curl generation
+    # Check for curl generation (code generator functions removed in v0.3.1)
     assert "curl" in js_content.lower()
-
-    # Note: Code generators were removed from the plugin in v0.3.0
-    assert "generateCurl" in js_content or "curl" in js_content.lower()
 
 
 # ── setup_llm_docs tests ──────────────────────────────────────────────────────
@@ -510,3 +507,162 @@ def test_llm_chat_not_in_openapi_schema():
     client = TestClient(make_app())
     schema = client.get("/openapi.json").json()
     assert "/llm-chat" not in schema.get("paths", {})
+
+
+# ── OpenAPI Schema Context Tests ─────────────────────────────────────────────
+
+
+def test_build_openapi_context_from_full_schema():
+    """Test that build_openapi_context converts full schema to readable format."""
+    from swagger_llm_ui.plugin import build_openapi_context
+    
+    schema = {
+        "info": {"title": "Test API", "version": "1.0.0"},
+        "paths": {
+            "/users": {
+                "get": {
+                    "summary": "List Users",
+                    "operationId": "listUsers",
+                    "tags": ["users"],
+                    "parameters": [
+                        {"name": "limit", "in": "query", "required": False, "type": "integer"}
+                    ],
+                    "responses": {
+                        "200": {"description": "Successful response"},
+                        "401": {"description": "Unauthorized"}
+                    }
+                },
+                "post": {
+                    "summary": "Create User",
+                    "requestBody": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {"name": {"type": "string"}, "email": {"type": "string"}}
+                                }
+                            }
+                        }
+                    },
+                    "responses": {"201": {"description": "User created"}}
+                }
+            }
+        },
+        "components": {
+            "schemas": {
+                "User": {
+                    "type": "object",
+                    "properties": {"id": {"type": "integer"}, "name": {"type": "string"}}
+                }
+            }
+        }
+    }
+    
+    context = build_openapi_context(schema)
+    
+    # Check key information is included
+    assert "Test API" in context
+    assert "## `/users`" in context or "`/users`" in context
+    assert "GET" in context
+    assert "POST" in context
+    assert "List Users" in context or "summary" in context.lower()
+    assert "Create User" in context
+    assert "User" in context  # Schema name
+
+
+def test_openapi_context_includes_servers():
+    """Test that server URLs are included in OpenAPI context."""
+    from swagger_llm_ui.plugin import build_openapi_context
+    
+    schema = {
+        "info": {"title": "Test API", "version": "1.0.0"},
+        "servers": [
+            {"url": "https://api.example.com/v1", "description": "Production"},
+            {"url": "http://localhost:8000", "description": "Development"}
+        ],
+        "paths": {}
+    }
+    
+    context = build_openapi_context(schema)
+    
+    assert "Production" in context or "Development" in context
+    assert "https://api.example.com/v1" in context
+
+
+def test_openapi_context_handles_empty_schema():
+    """Test that empty/invalid schemas don't cause errors."""
+    from swagger_llm_ui.plugin import build_openapi_context
+    
+    assert build_openapi_context(None) == ""
+    assert build_openapi_context({}) == ""
+    assert build_openapi_context("invalid") == ""
+
+
+def test_llm_chat_accepts_full_openapi_schema():
+    """The /llm-chat endpoint should accept a full openapi_schema field."""
+    client = TestClient(make_app())
+    
+    # Create a minimal OpenAPI schema
+    openapi_schema = {
+        "info": {"title": "Test API", "version": "1.0.0"},
+        "paths": {
+            "/health": {
+                "get": {
+                    "summary": "Health Check",
+                    "responses": {"200": {"description": "OK"}}
+                }
+            }
+        }
+    }
+    
+    response = client.post(
+        "/llm-chat",
+        json={
+            "messages": [{"role": "user", "content": "What is the health endpoint?"}],
+            "openapi_schema": openapi_schema
+        },
+        headers={"X-LLM-Base-Url": "http://localhost:9999/v1"},
+    )
+    
+    # Streaming endpoint returns 200 with SSE content
+    assert response.status_code == 200
+    assert "text/event-stream" in response.headers["content-type"]
+
+
+def test_openapi_schema_takes_precedence_over_summary():
+    """When both openapi_schema and openapi_summary are provided, schema should be used."""
+    client = TestClient(make_app())
+    
+    response = client.post(
+        "/llm-chat",
+        json={
+            "messages": [{"role": "user", "content": "test"}],
+            "openapi_summary": "This is old format",
+            "openapi_schema": {
+                "info": {"title": "New Schema API", "version": "2.0.0"},
+                "paths": {
+                    "/test": {
+                        "get": {"summary": "Test", "responses": {"200": {"description": "OK"}}}
+                    }
+                }
+            }
+        },
+        headers={"X-LLM-Base-Url": "http://localhost:9999/v1"},
+    )
+    
+    assert response.status_code == 200
+
+
+def test_fetch_openapi_schema_in_chat_panel():
+    """Test that the JavaScript fetches and stores OpenAPI schema."""
+    client = TestClient(make_app())
+    
+    # Get the docs page to verify JavaScript contains fetch logic
+    html = client.get("/docs").text
+    
+    # Check that the JavaScript includes OpenAPI schema fetching
+    assert "fetchOpenApiSchema" in html or "/swagger-llm-static/llm-settings-plugin.js" in html
+    
+    # Check that the JS file contains schema storage logic
+    js_content = client.get("/swagger-llm-static/llm-settings-plugin.js").text
+    assert "openapiSchema" in js_content

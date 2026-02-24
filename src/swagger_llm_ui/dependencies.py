@@ -39,20 +39,23 @@ async def get_llm_config(
     """
     config = LLMConfig()
 
-    if isinstance(x_llm_base_url, str):
-        config.base_url = x_llm_base_url
-    if isinstance(x_llm_api_key, str):
+    # Filter out empty strings before processing
+    if isinstance(x_llm_base_url, str) and x_llm_base_url.strip():
+        config.base_url = x_llm_base_url.strip()
+    if isinstance(x_llm_api_key, str) and x_llm_api_key.strip():
         config.api_key = x_llm_api_key
-    if isinstance(x_llm_model_id, str):
+    if isinstance(x_llm_model_id, str) and x_llm_model_id.strip():
         config.model_id = x_llm_model_id
-    if isinstance(x_llm_max_tokens, str):
+    
+    # Handle numeric fields - only update if non-empty string and valid number
+    if isinstance(x_llm_max_tokens, str) and x_llm_max_tokens.strip():
         try:
-            config.max_tokens = int(x_llm_max_tokens)
+            config.max_tokens = int(x_llm_max_tokens.strip())
         except ValueError:
             pass
-    if isinstance(x_llm_temperature, str):
+    if isinstance(x_llm_temperature, str) and x_llm_temperature.strip():
         try:
-            config.temperature = float(x_llm_temperature)
+            config.temperature = float(x_llm_temperature.strip())
         except ValueError:
             pass
 

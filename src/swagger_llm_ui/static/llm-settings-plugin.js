@@ -429,64 +429,12 @@
     return lines.join('\n');
   }
 
-  // ── Extract code blocks from markdown text for cleaner copying ─────────────
-  function extractCodeBlocks(text) {
-    if (!text || typeof text !== 'string') return text;
+  // ── Message ID counter for unique timestamps (fixes timestamp collision issue) ─
+  var _messageIdCounter = 0;
 
-    // Simple regex-based extraction (works without marked)
-    var codeBlocks = [];
-    
-    // Match fenced code blocks with optional language specifier
-    var codeBlockRegex = /```(\w*)\n([\s\S]*?)```/g;
-    var match;
-    while ((match = codeBlockRegex.exec(text)) !== null) {
-      var lang = match[1] || '';
-      var codeContent = match[2];
-      if (lang) {
-        codeBlocks.push('// ' + lang + '\n' + codeContent);
-      } else {
-        codeBlocks.push(codeContent);
-      }
-    }
-
-    if (codeBlocks.length > 0) {
-      return codeBlocks.join('\n\n');
-    }
-
-    // Simple fallback: remove markdown formatting but keep text
-    var clean = text;
-    
-    // Remove code block markers
-    clean = clean.replace(/```[a-z]*\n([\s\S]*?)```/gi, '$1');
-    
-    // Remove inline code
-    clean = clean.replace(/`([^`]+)`/g, '$1');
-    
-    // Remove markdown links but keep text
-    clean = clean.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
-    
-    // Remove image markdown
-    clean = clean.replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1');
-    
-    // Remove bold/italic markers but keep text
-    clean = clean.replace(/\*\*([^*]+)\*\*/g, '$1');
-    clean = clean.replace(/__([^_]+)__/g, '$1');
-    clean = clean.replace(/\*([^*]+)\*/g, '$1');
-    clean = clean.replace(/_([^_]+)_/g, '$1');
-    
-    // Remove heading markers
-    clean = clean.replace(/^#{1,6}\s+(.*)$/gm, '$1');
-    
-    // Remove blockquote markers
-    clean = clean.replace(/^>\s+/gm, '');
-    
-    // Remove horizontal rules
-    clean = clean.replace(/^-{3,}$/gm, '');
-    
-    // Clean up extra blank lines
-    clean = clean.replace(/\n{3,}/g, '\n\n');
-    
-    return clean.trim();
+  // Generate a unique message ID to prevent timestamp collisions
+  function generateMessageId() {
+    return Date.now() + '_' + (++_messageIdCounter);
   }
 
   // ── Chat panel component ───────────────────────────────────────────────────
@@ -500,12 +448,9 @@
           input: "",
           isTyping: false,
           chatHistory: loadChatHistory(),
-          schemaSummary: null,
           schemaLoading: false,
           copiedMessageId: null,
           headerHover: {},
-          cancelToken: null,
-          copiedCodeBlock: null,
         };
         this.handleSend = this.handleSend.bind(this);
         this.handleInputChange = this.handleInputChange.bind(this);
@@ -537,17 +482,7 @@
         }
         if (this._copyTimeoutId) {
           clearTimeout(this._copyTimeoutId);
-        }
-      }
-
-      // Reset copied state periodically
-      componentDidUpdate(prevProps, prevState) {
-        if (prevState.copiedCodeBlock !== this.state.copiedCodeBlock && 
-            this.state.copiedCodeBlock !== null) {
-          if (this._copyTimeoutId) clearTimeout(this._copyTimeoutId);
-          this._copyTimeoutId = setTimeout(function() {
-            this.setState({ copiedCodeBlock: null });
-          }.bind(this), 2000);
+          this._copyTimeoutId = null;
         }
       }
 
@@ -565,14 +500,25 @@
         fetch("/openapi.json", { signal: self._fetchAbortController.signal })
           .then(function (res) { return res.json(); })
           .then(function (schema) {
-            var summary = getSchemaSummary(schema);
-            self.setState({ schemaSummary: summary, schemaLoading: false });
+            // Store full schema for use in chat requests
+            self._openapiSchema = schema;
             dispatchAction(system, 'setOpenApiSchema', schema);
+            
+            // Update localStorage with full schema for persistence
+            try {
+                var storedSettings = loadFromStorage();
+                storedSettings.openapiSchema = schema;
+                saveToStorage(storedSettings);
+            } catch (e) {
+                // Ignore storage errors
+            }
+            
+            self.setState({ schemaLoading: false });
           })
           .catch(function (err) {
             if (err.name !== 'AbortError') {
               console.warn('Failed to fetch OpenAPI schema:', err);
-              self.setState({ schemaSummary: '', schemaLoading: false });
+              self.setState({ schemaLoading: false });
             }
           });
       }
@@ -580,8 +526,8 @@
       addMessage(msg) {
         this.setState(function (prev) {
           var history = prev.chatHistory || [];
-          // If the last message is from assistant and has same timestamp (streaming), update it instead of appending
-          if (history.length > 0 && msg.role === 'assistant' && history[history.length - 1].role === 'assistant' && history[history.length - 1].timestamp === msg.timestamp) {
+          // Use the exact message ID to update instead of timestamp (fixes collision)
+          if (history.length > 0 && msg.role === 'assistant' && history[history.length - 1].role === 'assistant' && history[history.length - 1].messageId === msg.messageId) {
             var updated = history.slice(0, -1).concat([msg]);
             saveChatHistory(updated);
             return { chatHistory: updated };
@@ -614,10 +560,11 @@
 
         var self = this;
         var userInput = this.state.input.trim();
-        var streamTs = Date.now() + 1;
+        var msgId = generateMessageId(); // Use unique message ID instead of timestamp
+        var streamMsgId = generateMessageId();
 
         // Build API messages from current history + new user message before setState
-        var userMsg = { role: 'user', content: userInput, timestamp: Date.now() };
+        var userMsg = { role: 'user', content: userInput, messageId: msgId };
         var currentHistory = self.state.chatHistory || [];
         var apiMessages = currentHistory.concat([userMsg]).map(function (m) {
           return { role: m.role, content: m.content };
@@ -626,10 +573,11 @@
         // Add user message to local state
         self.addMessage(userMsg);
         // Also add empty assistant message immediately so it persists in chatHistory
-        self.addMessage({ role: 'assistant', content: '', timestamp: streamTs });
-        var cancelToken = new AbortController();
-        self.setState({ input: "", isTyping: true, cancelToken: cancelToken });
-
+        self.addMessage({ role: 'assistant', content: '', messageId: streamMsgId });
+        
+        // Store cancelToken on the class, not state (avoid re-renders)
+        self._currentCancelToken = new AbortController();
+        
         var settings = loadFromStorage();
 
         var scrollToBottom = function() {
@@ -640,11 +588,11 @@
         var finalize = function(content, saveContent) {
           // Update the assistant message in chatHistory with final content
           if (saveContent && content && content.trim() && content !== "*(cancelled)*") {
-            self.addMessage({ role: 'assistant', content: content, timestamp: streamTs });
+            self.addMessage({ role: 'assistant', content: content, messageId: streamMsgId });
           }
+          self._currentCancelToken = null;
           self.setState({ 
             isTyping: false,
-            cancelToken: null
           });
           setTimeout(scrollToBottom, 30);
         };
@@ -652,24 +600,40 @@
         // Track accumulated content at handleSend scope so cancel/catch can access it
         var accumulated = "";
         
-        // Track the timestamp of the message being streamed to update the correct message
-        var currentStreamTimestamp = streamTs;
+        // Track the messageId of the message being streamed to update the correct message
+        var currentStreamMessageId = streamMsgId;
 
+        // Get full OpenAPI schema from localStorage or fetch if not available
+        var getOpenApiSchema = function() {
+            try {
+                var storedSettings = loadFromStorage();
+                if (storedSettings.openapiSchema) {
+                    return storedSettings.openapiSchema;
+                }
+            } catch (e) {
+                // Ignore errors
+            }
+            return null;
+        };
+
+        var fullSchema = getOpenApiSchema();
+        
         fetch("/llm-chat", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
+            // Only include non-empty header values
             "X-LLM-Base-Url": settings.baseUrl || "",
             "X-LLM-Api-Key": settings.apiKey || "",
             "X-LLM-Model-Id": settings.modelId || "",
-            "X-LLM-Max-Tokens": settings.maxTokens != null ? String(settings.maxTokens) : "",
-            "X-LLM-Temperature": settings.temperature != null ? String(settings.temperature) : "",
+            "X-LLM-Max-Tokens": (settings.maxTokens != null && settings.maxTokens !== '') ? String(settings.maxTokens) : "",
+            "X-LLM-Temperature": (settings.temperature != null && settings.temperature !== '') ? String(settings.temperature) : "",
           },
           body: JSON.stringify({
             messages: apiMessages,
-            openapi_summary: self.state.schemaSummary || ""
+            openapi_schema: fullSchema
           }),
-          signal: cancelToken.signal
+          signal: self._currentCancelToken.signal
         })
           .then(function (res) {
             if (!res.ok) {
@@ -681,7 +645,7 @@
 
             var processChunk = function() {
               return reader.read().then(function (result) {
-                if (cancelToken.signal.aborted) {
+                if (self._currentCancelToken && self._currentCancelToken.signal.aborted) {
                   finalize(accumulated, true);
                   return;
                 }
@@ -716,11 +680,11 @@
                       self.setState(function (prev) {
                         var history = prev.chatHistory || [];
                         if (history.length > 0 && history[history.length - 1].role === 'assistant' && 
-                            history[history.length - 1].timestamp === currentStreamTimestamp) {
+                            history[history.length - 1].messageId === currentStreamMessageId) {
                           var updated = history.slice(0, -1).concat([{
                             role: 'assistant',
                             content: accumulated,
-                            timestamp: history[history.length - 1].timestamp
+                            messageId: history[history.length - 1].messageId
                           }]);
                           saveChatHistory(updated);
                           return { chatHistory: updated };
@@ -763,19 +727,14 @@
 
       copyToClipboard(text) {
         if (!text || !navigator.clipboard) return;
-        var self = this;
-
-        // Extract code blocks from markdown content
-        var textToCopy = extractCodeBlocks(text);
-
-        navigator.clipboard.writeText(textToCopy).then(function () {
-          self.setState({ copiedMessageId: Date.now() });
-          if (self._copyTimeoutId) clearTimeout(self._copyTimeoutId);
-          self._copyTimeoutId = setTimeout(function () {
-            self._copyTimeoutId = null;
-            self.setState({ copiedMessageId: null });
-          }, 2000);
-        }).catch(function (err) {
+        
+        navigator.clipboard.writeText(text).then(function () {
+          if (this._copyTimeoutId) clearTimeout(this._copyTimeoutId);
+          this._copyTimeoutId = setTimeout(function () {
+            this._copyTimeoutId = null;
+            this.setState({ copiedMessageId: null });
+          }.bind(this), 2000);
+        }.bind(this)).catch(function (err) {
           console.error('Failed to copy:', err);
         });
       }
@@ -811,7 +770,7 @@
         
         return React.createElement(
           "div",
-          { key: msg.timestamp, className: "llm-chat-message-wrapper" },
+          { key: msg.messageId || msg.timestamp, className: "llm-chat-message-wrapper" },
           React.createElement(
             "div",
             { 
@@ -826,15 +785,15 @@
               "div",
               { 
                 className: "llm-chat-message-header",
-                onMouseEnter: function() { self.setHeaderHover(msg.timestamp, true); },
-                onMouseLeave: function() { self.setHeaderHover(msg.timestamp, false); }
+                onMouseEnter: function() { self.setHeaderHover(msg.messageId || msg.timestamp, true); },
+                onMouseLeave: function() { self.setHeaderHover(msg.messageId || msg.timestamp, false); }
               },
               isUser 
                 ? React.createElement("span", { className: "llm-user-label" }, "You")
                 : React.createElement("div", { style: { display: "flex", alignItems: "center", gap: "6px" } },
                     React.createElement("span", { className: "llm-assistant-label" }, "Assistant"),
                     React.createElement("span", { className: "llm-chat-message-time" },
-                      new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                      (msg.messageId || msg.timestamp) ? new Date(parseInt((msg.messageId || "").split('_')[0] || msg.timestamp)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''
                     )
                   ),
               React.createElement(
@@ -844,10 +803,10 @@
                   onClick: function() { self.copyToClipboard(msg.content); },
                   title: "Copy message",
                   style: Object.assign({}, styles.copyMessageBtn, {
-                    opacity: (self.state.headerHover[msg.timestamp] || self.state.copiedMessageId === msg.timestamp) && !isStreamingThisMessage ? 1 : 0
+                    opacity: (self.state.headerHover[msg.messageId || msg.timestamp] || self.state.copiedMessageId === msg.messageId) && !isStreamingThisMessage ? 1 : 0
                   })
                 },
-                self.state.copiedMessageId === msg.timestamp ? "✅" : "📋"
+                self.state.copiedMessageId === msg.messageId ? "✅" : "📋"
               )
             ),
             React.createElement(
@@ -883,37 +842,6 @@
         });
       }
 
-      // Enhanced copy button for code blocks within chat messages
-      renderCodeBlockWithCopy(language, code) {
-        var React = system.React;
-        var self = this;
-        
-        return React.createElement(
-          "div",
-          { className: "llm-code-block-wrapper", style: styles.codeBlock },
-          React.createElement(
-            "div",
-            { className: "code-block-header" },
-            React.createElement("span", { className: "code-block-label" }, language || "code"),
-            React.createElement(
-              "button",
-              {
-                className: "code-block-copy",
-                onClick: function() { 
-                  navigator.clipboard.writeText(code);
-                  self.setState({ copiedCodeBlock: Date.now() });
-                },
-                title: "Copy code"
-              },
-              self.state.copiedCodeBlock ? "✅ Copied" : "📋 Copy"
-            )
-          ),
-          React.createElement("pre", { style: { margin: 0, overflowX: "auto" } },
-            React.createElement("code", null, code)
-          )
-        );
-      }
-
       render() {
         var React = system.React;
         var self = this;
@@ -929,7 +857,7 @@
               ? React.createElement(
                   "div",
                   { style: styles.emptyChat },
-                  "Ask questions about your API!\n\nExamples:\n\u2022 What endpoints are available?\n\u2022 How do I use the chat completions endpoint?\n\u2022 Generate a curl command for /health"
+                  "Ask questions about your API!\n\nExamples:\n• What endpoints are available?\n• How do I use the chat completions endpoint?\n• Generate a curl command for /health"
                 )
               : chatHistory.map(this.renderMessage)
             ),
@@ -966,7 +894,9 @@
               this.state.isTyping && React.createElement(
                 "button",
                 {
-                  onClick: this.handleCancel,
+                  onClick: function() { 
+                    if (self._currentCancelToken) self._currentCancelToken.abort(); 
+                  },
                   style: Object.assign({}, styles.sendButton, { background: "#dc2626" }),
                   title: "Cancel streaming response"
                 },
@@ -1081,6 +1011,7 @@
           method: 'GET',
           headers: {
             "Content-Type": "application/json",
+            // Only include non-empty header values
             "X-LLM-Base-Url": settings.baseUrl || "",
             "X-LLM-Api-Key": settings.apiKey || "",
             "X-LLM-Model-Id": settings.modelId || "",
@@ -1560,62 +1491,6 @@
       fontSize: "15px",
       whiteSpace: "pre-line",
     },
-    codeBlock: {
-      background: "var(--theme-input-bg)",
-      borderRadius: "8px",
-      padding: "12px",
-      overflowX: "auto",
-      margin: "8px 0",
-      fontSize: "14px",
-      fontFamily: "'Consolas', 'Monaco', monospace",
-    },
-    codeBlockWrapper: {
-      background: "var(--theme-input-bg)",
-      borderRadius: "8px",
-      overflow: "hidden",
-      margin: "12px 0",
-      border: "1px solid var(--theme-border-color)",
-    },
-    codeBlockHeader: {
-      display: "flex",
-      justifyContent: "space-between",
-      alignItems: "center",
-      marginBottom: "8px",
-      color: "var(--theme-text-secondary)",
-      fontSize: "12px",
-    },
-    codeCopyBtn: {
-      background: "var(--theme-secondary)",
-      border: "none",
-      color: "var(--theme-text-primary)",
-      padding: "6px 12px",
-      borderRadius: "4px",
-      cursor: "pointer",
-      fontSize: "11px",
-      transition: "all 0.2s ease",
-    },
-    codeCopySuccess: {
-      background: "#10b981 !important",
-      color: "white !important",
-    },
-    typingIndicator: {
-      display: "inline-flex",
-      alignItems: "center",
-      gap: "4px",
-      padding: "8px 12px",
-      background: "var(--theme-secondary)",
-      borderRadius: "18px",
-      fontSize: "12px",
-    },
-    typingDot: {
-      width: "6px",
-      height: "6px",
-      borderRadius: "50%",
-      background: "var(--theme-text-secondary)",
-      animation: "typing 1.4s infinite ease-in-out both",
-    },
-    typingDot1: { animationDelay: "-0.32s" },
-    typingDot2: { animationDelay: "-0.16s" },
   };
 
   // ── CSS injection helper with guard to prevent duplicates ─────────────────
@@ -1788,16 +1663,4 @@
       document.head.appendChild(themeStyle);
     }
   };
-
-  // ── Debug logging helper (optional) ────────────────────────────────────────
-  // Set window.SWAGGER_LLM_DEBUG = true to enable debug logging
-  var _debugEnabled = typeof window !== 'undefined' && window.SWAGGER_LLM_DEBUG;
-  function debugLog() {
-    if (_debugEnabled && typeof console !== 'undefined') {
-      console.log('[swagger-llm-ui]', arguments);
-    }
-  }
-
-  // Expose debug function for testing
-  window._swaggerLLMDebug = debugLog;
 })();
