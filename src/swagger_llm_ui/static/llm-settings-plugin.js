@@ -519,6 +519,8 @@
         this.renderMessage = this.renderMessage.bind(this);
         this._copyTimeoutId = null;
         
+        this._fetchAbortController = null;
+      
         // Initialize marked.js
         initMarked();
       }
@@ -528,6 +530,11 @@
       }
 
       componentWillUnmount() {
+        // Abort any pending fetch for OpenAPI schema
+        if (this._fetchAbortController) {
+          this._fetchAbortController.abort();
+          this._fetchAbortController = null;
+        }
         if (this._copyTimeoutId) {
           clearTimeout(this._copyTimeoutId);
         }
@@ -546,8 +553,16 @@
 
       fetchOpenApiSchema() {
         var self = this;
+        
+        // Abort any existing request
+        if (this._fetchAbortController) {
+          this._fetchAbortController.abort();
+        }
+        
+        self._fetchAbortController = new AbortController();
         self.setState({ schemaLoading: true });
-        fetch("/openapi.json")
+        
+        fetch("/openapi.json", { signal: self._fetchAbortController.signal })
           .then(function (res) { return res.json(); })
           .then(function (schema) {
             var summary = getSchemaSummary(schema);
@@ -555,8 +570,10 @@
             dispatchAction(system, 'setOpenApiSchema', schema);
           })
           .catch(function (err) {
-            console.warn('Failed to fetch OpenAPI schema:', err);
-            self.setState({ schemaSummary: '', schemaLoading: false });
+            if (err.name !== 'AbortError') {
+              console.warn('Failed to fetch OpenAPI schema:', err);
+              self.setState({ schemaSummary: '', schemaLoading: false });
+            }
           });
       }
 
@@ -1059,8 +1076,8 @@
         self.setState({ connectionStatus: "connecting", lastError: "" });
         dispatchAction(system, 'setConnectionStatus', "connecting");
 
-        // Route through backend proxy to avoid CORS
-        fetch("/models", {
+        // Route through backend proxy to avoid CORS (new /llm/models endpoint)
+        fetch("/llm/models", {
           method: 'GET',
           headers: {
             "Content-Type": "application/json",
@@ -1071,11 +1088,17 @@
         })
           .then(function (res) {
             if (!res.ok) {
-              throw new Error('HTTP ' + res.status + ': ' + res.statusText);
+              return res.json().catch(function() { 
+                throw new Error('HTTP ' + res.status + ': ' + res.statusText); 
+              });
             }
             return res.json();
           })
           .then(function (data) {
+            // Check if response has error field
+            if (data && data.error) {
+              throw new Error(data.details || data.error);
+            }
             self.setState({ connectionStatus: "connected" });
             dispatchAction(system, 'setConnectionStatus', "connected");
           })
@@ -1595,6 +1618,26 @@
     typingDot2: { animationDelay: "-0.16s" },
   };
 
+  // ── CSS injection helper with guard to prevent duplicates ─────────────────
+  function injectStyles(id, css) {
+    if (typeof document === 'undefined') return;
+    
+    // Check for existing style element
+    var existing = document.getElementById(id);
+    if (existing) {
+      // Update content if different
+      if (existing.textContent !== css) {
+        existing.textContent = css;
+      }
+      return;
+    }
+    
+    var styleEl = document.createElement('style');
+    styleEl.id = id;
+    styleEl.textContent = css;
+    document.head.appendChild(styleEl);
+  }
+
   // ── CSS styles for chat bubbles, avatars, and animations (theme-aware) ─────
   var chatStyles = [
     // Chat message wrapper styles
@@ -1681,14 +1724,7 @@
   ].join('\n');
   
   // Inject chat styles into document
-  if (typeof document !== 'undefined') {
-    var styleEl = document.createElement('style');
-    styleEl.id = 'swagger-llm-chat-styles';
-    styleEl.textContent = chatStyles;
-    if (!document.getElementById('swagger-llm-chat-styles')) {
-      document.head.appendChild(styleEl);
-    }
-  }
+  injectStyles('swagger-llm-chat-styles', chatStyles);
 
   // ── Plugin definition ───────────────────────────────────────────────────────
   window.LLMSettingsPlugin = function (system) {
@@ -1736,14 +1772,32 @@
       '--theme-provider-azure: #0078d4',
     ].join('; ');
 
-    // Update existing theme style element or create new one
+    // Update existing theme style element or create new one using helper
+    var css = ':root { ' + cssVars + ' }';
     var themeStyle = document.getElementById('swagger-llm-theme-styles');
-    if (!themeStyle) {
+    
+    if (themeStyle) {
+      // Only update if content is different to avoid unnecessary reflows
+      if (themeStyle.textContent !== css) {
+        themeStyle.textContent = css;
+      }
+    } else {
       themeStyle = document.createElement('style');
       themeStyle.id = 'swagger-llm-theme-styles';
+      themeStyle.textContent = css;
       document.head.appendChild(themeStyle);
     }
-
-    themeStyle.textContent = ':root { ' + cssVars + ' }';
   };
+
+  // ── Debug logging helper (optional) ────────────────────────────────────────
+  // Set window.SWAGGER_LLM_DEBUG = true to enable debug logging
+  var _debugEnabled = typeof window !== 'undefined' && window.SWAGGER_LLM_DEBUG;
+  function debugLog() {
+    if (_debugEnabled && typeof console !== 'undefined') {
+      console.log('[swagger-llm-ui]', arguments);
+    }
+  }
+
+  // Expose debug function for testing
+  window._swaggerLLMDebug = debugLog;
 })();

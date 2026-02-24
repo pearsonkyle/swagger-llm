@@ -220,3 +220,27 @@ def setup_llm_docs(
                 yield f"data: {_json.dumps({'error': 'Request failed', 'details': str(exc), 'url': url})}\n\n"
 
         return StreamingResponse(stream_response(), media_type="text/event-stream")
+
+    # Register the /llm/models endpoint for connection testing
+    @app.get("/llm/models", include_in_schema=False)
+    async def llm_models(llm: LLMConfig = Depends(get_llm_config)):
+        """List available models from the configured LLM provider.
+        
+        Used for connection testing to verify credentials are valid.
+        """
+        url = llm.base_url.rstrip("/") + "/models"
+        headers: Dict[str, str] = {"Content-Type": "application/json"}
+        if llm.api_key:
+            headers["Authorization"] = f"Bearer {llm.api_key}"
+
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(url, headers=headers)
+                if response.status_code != 200:
+                    return {
+                        "error": f"HTTP {response.status_code}",
+                        "details": response.text[:500]
+                    }
+                return response.json()
+        except httpx.RequestError as exc:
+            return {"error": "Request failed", "details": str(exc)}

@@ -36,17 +36,6 @@
     </style>
 
     <script>
-      // LLM Provider configurations
-      var LLM_PROVIDERS = {
-        openai: { name: 'OpenAI', url: 'https://api.openai.com/v1' },
-        anthropic: { name: 'Anthropic', url: 'https://api.anthropic.com/v1' },
-        ollama: { name: 'Ollama', url: 'http://localhost:11434/v1' },
-        lmstudio: { name: 'LM Studio', url: 'http://localhost:1234/v1' },
-        vllm: { name: 'vLLM', url: 'http://localhost:8000/v1' },
-        azure: { name: 'Azure OpenAI', url: 'https://YOUR_RESOURCE_NAME.openai.azure.com/openai/deployments/YOUR_DEPLOYMENT' },
-        custom: { name: 'Custom', url: '' }
-      };
-
       // Read LLM settings from localStorage (set by the LLMSettingsPanel)
       var STORAGE_KEY = "swagger-llm-settings";
 
