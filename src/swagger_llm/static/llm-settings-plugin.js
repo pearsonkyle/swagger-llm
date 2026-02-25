@@ -834,6 +834,146 @@
         self._streamLLMResponse(apiMessages, streamMsgId, fullSchema);
       }
 
+      // ── Error classification and user-friendly messages ─────────────────────
+      _getErrorMessage(err, responseText) {
+        var errorMsg = err.message || "Request failed";
+        var details = "";
+        
+        // Try to extract details from response
+        try {
+          if (responseText) {
+            var parsed = JSON.parse(responseText);
+            if (parsed.details) details = parsed.details;
+            else if (parsed.error) details = parsed.error;
+          }
+        } catch (e) {
+          // Not JSON, might be HTML or plain text
+          if (responseText && responseText.length < 500) {
+            details = responseText;
+          }
+        }
+
+        // Check for specific error patterns
+        var lowerError = (errorMsg + ' ' + details).toLowerCase();
+        
+        // Network/connection errors
+        if (lowerError.includes('connection refused') || 
+            lowerError.includes('connect timeout') ||
+            lowerError.includes('network') ||
+            lowerError.includes('econnrefused') ||
+            lowerError.includes('enotfound') ||
+            lowerError.includes('fetch failed')) {
+          return {
+            title: "Connection Failed",
+            message: "Could not connect to your LLM provider. Please verify your Base URL in Settings.",
+            action: "Check Settings",
+            needsSettings: true
+          };
+        }
+        
+        // Authentication errors (401, 403, invalid API key)
+        if (lowerError.includes('401') || 
+            lowerError.includes('403') || 
+            lowerError.includes('unauthorized') ||
+            lowerError.includes('invalid api key') ||
+            lowerError.includes('authentication') ||
+            lowerError.includes('api key')) {
+          return {
+            title: "Authentication Failed",
+            message: "Your API key appears to be invalid or missing. Please check your API Key in Settings.",
+            action: "Check Settings",
+            needsSettings: true
+          };
+        }
+        
+        // Not found errors (404, model not found)
+        if (lowerError.includes('404') || 
+            lowerError.includes('not found') ||
+            lowerError.includes('model')) {
+          return {
+            title: "Resource Not Found",
+            message: "The requested resource was not found. This might mean your Model ID is incorrect or the endpoint doesn't exist.",
+            action: "Check Settings",
+            needsSettings: true
+          };
+        }
+        
+        // Rate limiting
+        if (lowerError.includes('429') || 
+            lowerError.includes('rate limit') ||
+            lowerError.includes('too many requests')) {
+          return {
+            title: "Rate Limited",
+            message: "You've sent too many requests. Please wait a moment and try again.",
+            action: null,
+            needsSettings: false
+          };
+        }
+        
+        // Timeout errors
+        if (lowerError.includes('timeout') || 
+            lowerError.includes('timed out')) {
+          return {
+            title: "Request Timeout",
+            message: "The request took too long. The LLM provider may be busy or experiencing issues.",
+            action: null,
+            needsSettings: false
+          };
+        }
+        
+        // Server errors (5xx)
+        if (lowerError.includes('500') || 
+            lowerError.includes('502') || 
+            lowerError.includes('503') ||
+            lowerError.includes('504') ||
+            lowerError.includes('server error')) {
+          return {
+            title: "Server Error",
+            message: "The LLM provider's server encountered an error. This is usually a temporary issue.",
+            action: null,
+            needsSettings: false
+          };
+        }
+        
+        // CORS errors
+        if (lowerError.includes('cors') || 
+            lowerError.includes('access-control')) {
+          return {
+            title: "CORS Error",
+            message: "Cross-origin request blocked. This is usually a configuration issue with the LLM provider.",
+            action: null,
+            needsSettings: false
+          };
+        }
+        
+        // Generic error - still provide helpful guidance
+        return {
+          title: "Request Failed",
+          message: details || errorMsg,
+          action: "Check Settings",
+          needsSettings: true
+        };
+      }
+
+      // ── Render error message in chat ────────────────────────────────────────
+      _renderErrorInChat(errorInfo) {
+        var self = this;
+        var errorHtml = '<div class="llm-error-message">';
+        errorHtml += '<div class="llm-error-title">' + errorInfo.title + '</div>';
+        errorHtml += '<div class="llm-error-text">' + errorInfo.message + '</div>';
+        
+        if (errorInfo.needsSettings) {
+          errorHtml += '<div class="llm-error-actions">';
+          errorHtml += '<button class="llm-error-action-btn" onclick="window.llmOpenSettings && window.llmOpenSettings()">';
+          errorHtml += '⚙️ ' + errorInfo.action;
+          errorHtml += '</button></div>';
+        }
+        
+        errorHtml += '</div>';
+        
+        return errorHtml;
+      }
+
       // ── Shared streaming helper ─────────────────────────────────────────────
       _streamLLMResponse(apiMessages, streamMsgId, fullSchema) {
         var self = this;
@@ -853,13 +993,31 @@
 
         var accumulated = "";
         var currentStreamMessageId = streamMsgId;
+        
+        // Track response for error handling
+        var lastResponseText = "";
 
         // Tool calls accumulator
         var accumulatedToolCalls = {};
 
-        var finalize = function(content, saveContent) {
+        var finalize = function(content, saveContent, isError) {
           if (saveContent && content && content.trim() && content !== "*(cancelled)*") {
-            self.addMessage({ role: 'assistant', content: content, messageId: streamMsgId });
+            // Check if this looks like an error message
+            var isErrorMsg = isError || (content && content.toLowerCase().startsWith('error:'));
+            
+            if (isErrorMsg) {
+              // Parse error and create user-friendly message
+              var errorInfo = self._getErrorMessage({ message: content }, lastResponseText);
+              var errorHtml = self._renderErrorInChat(errorInfo);
+              self.addMessage({ 
+                role: 'assistant', 
+                content: errorHtml, 
+                messageId: streamMsgId,
+                isError: true 
+              });
+            } else {
+              self.addMessage({ role: 'assistant', content: content, messageId: streamMsgId });
+            }
           }
           self._currentCancelToken = null;
           self.setState({ isTyping: false });
@@ -924,7 +1082,7 @@
                   try {
                     var chunk = JSON.parse(payload);
                     if (chunk.error) {
-                      finalize("Error: " + chunk.error + (chunk.details ? ": " + chunk.details : ""), false);
+                      finalize("Error: " + chunk.error + (chunk.details ? ": " + chunk.details : ""), true, true);
                       return;
                     }
 
@@ -1037,7 +1195,8 @@
             if (err.name === 'AbortError') {
               finalize(accumulated, true);
             } else {
-              finalize("Error: " + (err.message || "Request failed"), false);
+              // Mark as error to trigger user-friendly error display
+              finalize("Error: " + (err.message || "Request failed"), true, true);
             }
           });
 
@@ -1567,14 +1726,14 @@
                 wordBreak: "break-all",
                 margin: "0 0 8px 0",
                 lineHeight: "1.4",
-                maxHeight: "100px",
+                maxHeight: "120px",
                 overflowY: "auto",
               }
             },
             curlCmd
           ),
           // Compact editable fields
-          React.createElement("div", { style: { display: "flex", gap: "6px", marginBottom: "6px", alignItems: "flex-end" } },
+          React.createElement("div", { style: { display: "flex", gap: "6px", marginBottom: "8px", alignItems: "flex-end" } },
             React.createElement(
               "div",
               { style: { flex: "0 0 80px" } },
@@ -1598,9 +1757,12 @@
             )
           ),
           // Body for POST
-          s.editMethod === 'POST' && React.createElement("div", { style: { marginBottom: "6px" } },
-            React.createElement("div", { style: labelStyle }, "Body"),
-            React.createElement("textarea", { value: s.editBody, onChange: function(e) { self.setState({ editBody: e.target.value }); }, style: Object.assign({}, inputStyle, { resize: "vertical", minHeight: "36px" }), rows: 2, placeholder: '{}' })
+          s.editMethod === 'POST' && React.createElement("div", { style: { marginBottom: "8px" } },
+            React.createElement("div", { style: Object.assign({}, labelStyle, { display: "flex", alignItems: "center", justifyContent: "space-between" }) }, 
+              "Body",
+              React.createElement("span", { style: { fontSize: "10px", color: "var(--theme-text-secondary)", fontWeight: "400" } }, "JSON")
+            ),
+            React.createElement("textarea", { value: s.editBody, onChange: function(e) { self.setState({ editBody: e.target.value }); }, style: Object.assign({}, inputStyle, { resize: "vertical", minHeight: "72px" }), rows: 4, placeholder: '{}' })
           ),
           // Buttons
           React.createElement(
@@ -1696,7 +1858,7 @@
                     cursor: (!this.state.input.trim() || this.state.isTyping) ? "not-allowed" : "pointer"
                   })
                 },
-                this.state.isTyping ? "..." : "Send ✅"
+                this.state.isTyping ? "..." : "Send"
               )
             )
           )
@@ -2509,6 +2671,49 @@
     '  .llm-chat-container { height: calc(100vh - 80px) !important; }',
     '  .llm-chat-messages { padding: 8px; gap: 10px; }',
     '}',
+
+    // Error message styles
+    '.llm-error-message {',
+    '  background: linear-gradient(135deg, rgba(239, 68, 68, 0.15), rgba(220, 38, 38, 0.1));',
+    '  border: 1px solid rgba(239, 68, 68, 0.3);',
+    '  border-radius: 8px;',
+    '  padding: 12px 14px;',
+    '  margin: 4px 0;',
+    '}',
+    '.llm-error-title {',
+    '  color: #ef4444;',
+    '  font-weight: 600;',
+    '  font-size: 14px;',
+    '  margin-bottom: 6px;',
+    '  display: flex;',
+    '  align-items: center;',
+    '  gap: 6px;',
+    '}',
+    '.llm-error-title::before {',
+    '  content: "⚠️";',
+    '}',
+    '.llm-error-text {',
+    '  color: var(--theme-text-secondary);',
+    '  font-size: 13px;',
+    '  line-height: 1.5;',
+    '}',
+    '.llm-error-actions {',
+    '  margin-top: 10px;',
+    '}',
+    '.llm-error-action-btn {',
+    '  background: var(--theme-primary);',
+    '  color: white;',
+    '  border: none;',
+    '  border-radius: 6px;',
+    '  padding: 6px 14px;',
+    '  font-size: 12px;',
+    '  cursor: pointer;',
+    '  transition: all 0.2s ease;',
+    '}',
+    '.llm-error-action-btn:hover {',
+    '  background: var(--theme-primary-hover);',
+    '  transform: translateY(-1px);',
+    '}',
   ].join('\n');
   
   // Inject chat styles into document
@@ -2574,6 +2779,16 @@
       themeStyle.id = 'swagger-llm-theme-styles';
       themeStyle.textContent = css;
       document.head.appendChild(themeStyle);
+    }
+  };
+
+  // ── Global function to open settings tab ───────────────────────────────────
+  // Called by error messages in chat when user needs to adjust settings
+  window.llmOpenSettings = function() {
+    try {
+      localStorage.setItem("swagger-llm-active-tab", "settings");
+    } catch (e) {
+      console.warn('Failed to switch to settings tab:', e);
     }
   };
 })();
