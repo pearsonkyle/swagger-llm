@@ -113,6 +113,7 @@
   var THEME_STORAGE_KEY = "swagger-llm-theme";
   var SETTINGS_STORAGE_KEY = "swagger-llm-settings";
   var CHAT_HISTORY_KEY = "swagger-llm-chat-history";
+  var TOOL_SETTINGS_KEY = "swagger-llm-tool-settings";
 
   // ── Theme loading/saving functions ─────────────────────────────────────────
   function loadTheme() {
@@ -169,6 +170,24 @@
   function saveChatHistory(messages) {
     try {
       localStorage.setItem(CHAT_HISTORY_KEY, JSON.stringify(messages.slice(-20))); // Keep last 20
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  // ── Tool settings persistence ───────────────────────────────────────────────
+  function loadToolSettings() {
+    try {
+      var raw = localStorage.getItem(TOOL_SETTINGS_KEY);
+      return raw ? JSON.parse(raw) : { enableTools: false, autoExecute: false, apiKey: '' };
+    } catch (e) {
+      return { enableTools: false, autoExecute: false, apiKey: '' };
+    }
+  }
+
+  function saveToolSettings(settings) {
+    try {
+      localStorage.setItem(TOOL_SETTINGS_KEY, JSON.stringify(settings));
     } catch (e) {
       // ignore
     }
@@ -429,6 +448,74 @@
     return lines.join('\n');
   }
 
+  // ── Check if an endpoint needs X-LLM-* headers ─────────────────────────────
+  function endpointNeedsLLMHeaders(schema, path) {
+    if (!schema || !schema.paths) return false;
+    var pathItem = schema.paths[path];
+    if (!pathItem || typeof pathItem !== 'object') return false;
+
+    var methods = ['get', 'post', 'put', 'patch', 'delete'];
+    for (var i = 0; i < methods.length; i++) {
+      var op = pathItem[methods[i]];
+      if (!op || typeof op !== 'object') continue;
+      var params = op.parameters || [];
+      for (var j = 0; j < params.length; j++) {
+        var p = params[j];
+        if (p && p['in'] === 'header' && typeof p.name === 'string' &&
+            p.name.toLowerCase().startsWith('x-llm-')) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  // ── Build a curl command string from tool call args ─────────────────────────
+  function buildCurlFromArgs(args, openapiSchema) {
+    var method = args.method || 'GET';
+    var url = args.path || '/';
+
+    // Substitute path params
+    var pathParams = args.path_params || {};
+    Object.keys(pathParams).forEach(function(key) {
+      url = url.replace('{' + key + '}', encodeURIComponent(pathParams[key]));
+    });
+
+    // Add query params
+    var queryParams = args.query_params || {};
+    var qKeys = Object.keys(queryParams);
+    if (qKeys.length > 0) {
+      var qs = qKeys.map(function(k) {
+        return encodeURIComponent(k) + '=' + encodeURIComponent(queryParams[k]);
+      }).join('&');
+      url += (url.indexOf('?') >= 0 ? '&' : '?') + qs;
+    }
+
+    var fullUrl = (typeof window !== 'undefined' && !url.startsWith('http')) ? window.location.origin + url : url;
+
+    var parts = ['curl'];
+    if (method !== 'GET') parts.push('-X ' + method);
+    parts.push("'" + fullUrl + "'");
+
+    // Add LLM headers only if endpoint needs them
+    var settings = loadFromStorage();
+    if (endpointNeedsLLMHeaders(openapiSchema, args.path || '/')) {
+      if (settings.baseUrl) parts.push("-H 'X-LLM-Base-Url: " + settings.baseUrl + "'");
+      if (settings.apiKey) parts.push("-H 'X-LLM-Api-Key: " + settings.apiKey + "'");
+      if (settings.modelId) parts.push("-H 'X-LLM-Model-Id: " + settings.modelId + "'");
+    }
+
+    var toolSettings = loadToolSettings();
+    if (toolSettings.apiKey) parts.push("-H 'Authorization: Bearer " + toolSettings.apiKey + "'");
+
+    if (method === 'POST' && args.body && Object.keys(args.body).length > 0) {
+      parts.push("-H 'Content-Type: application/json'");
+      parts.push("-d '" + JSON.stringify(args.body) + "'");
+    }
+
+    return parts.join(' \\\n  ');
+  }
+
   // ── Message ID counter for unique timestamps (fixes timestamp collision issue) ─
   var _messageIdCounter = 0;
 
@@ -451,6 +538,15 @@
           schemaLoading: false,
           copiedMessageId: null,
           headerHover: {},
+          // Tool calling state
+          pendingToolCall: null,
+          editMethod: 'GET',
+          editPath: '',
+          editQueryParams: '{}',
+          editPathParams: '{}',
+          editBody: '{}',
+          toolCallResponse: null,
+          toolRetryCount: 0,
         };
         this.handleSend = this.handleSend.bind(this);
         this.handleInputChange = this.handleInputChange.bind(this);
@@ -462,10 +558,15 @@
         this.formatMessageContent = this.formatMessageContent.bind(this);
         this.setHeaderHover = this.setHeaderHover.bind(this);
         this.renderMessage = this.renderMessage.bind(this);
+        this.handleExecuteToolCall = this.handleExecuteToolCall.bind(this);
+        this.sendToolResult = this.sendToolResult.bind(this);
+        this.renderToolCallPanel = this.renderToolCallPanel.bind(this);
         this._copyTimeoutId = null;
-        
+
         this._fetchAbortController = null;
-      
+        // Store the last assistant message with tool_calls for the agentic loop
+        this._lastToolCallAssistantMsg = null;
+
         // Initialize marked.js
         initMarked();
       }
@@ -555,87 +656,237 @@
         }
       }
 
-      handleSend() {
-        if (!this.state.input.trim() || this.state.isTyping) return;
-
+      handleExecuteToolCall() {
         var self = this;
-        var userInput = this.state.input.trim();
-        var msgId = generateMessageId(); // Use unique message ID instead of timestamp
-        var streamMsgId = generateMessageId();
+        var s = this.state;
+        var toolSettings = loadToolSettings();
+        var settings = loadFromStorage();
 
-        // Clear input and mark as typing before the async request
-        self.setState({ input: "", isTyping: true });
+        // Build tool args from current edited state (may differ from LLM's original proposal)
+        var executedArgs = {
+          method: s.editMethod || 'GET',
+          path: s.editPath || '',
+        };
+        try { executedArgs.query_params = JSON.parse(s.editQueryParams || '{}'); } catch (e) { executedArgs.query_params = {}; }
+        try { executedArgs.path_params = JSON.parse(s.editPathParams || '{}'); } catch (e) { executedArgs.path_params = {}; }
+        if (s.editMethod === 'POST') {
+          try { executedArgs.body = JSON.parse(s.editBody || '{}'); } catch (e) { executedArgs.body = {}; }
+        }
 
-        // Build API messages from current history + new user message before setState
-        var userMsg = { role: 'user', content: userInput, messageId: msgId };
-        var currentHistory = self.state.chatHistory || [];
-        var apiMessages = currentHistory.concat([userMsg]).map(function (m) {
-          return { role: m.role, content: m.content };
+        // Now add the tool call message to chat history with actual executed args
+        if (self._pendingToolCallMsg) {
+          var toolMsg = Object.assign({}, self._pendingToolCallMsg, {
+            _displayContent: 'Tool call: api_request(' + executedArgs.method + ' ' + executedArgs.path + ')',
+            _toolArgs: executedArgs
+          });
+          // Update the tool_calls arguments to reflect edited params
+          if (toolMsg.tool_calls && toolMsg.tool_calls.length > 0) {
+            toolMsg.tool_calls = toolMsg.tool_calls.map(function(tc) {
+              return Object.assign({}, tc, {
+                function: Object.assign({}, tc.function, {
+                  arguments: JSON.stringify(executedArgs)
+                })
+              });
+            });
+          }
+          self.addMessage(toolMsg);
+          self._pendingToolCallMsg = null;
+        }
+
+        // Build URL with path param substitution
+        var url = s.editPath;
+        try {
+          var pathParams = JSON.parse(s.editPathParams || '{}');
+          Object.keys(pathParams).forEach(function(key) {
+            url = url.replace('{' + key + '}', encodeURIComponent(pathParams[key]));
+          });
+        } catch (e) {}
+
+        // Add query params
+        try {
+          var queryParams = JSON.parse(s.editQueryParams || '{}');
+          var queryKeys = Object.keys(queryParams);
+          if (queryKeys.length > 0) {
+            var qs = queryKeys.map(function(k) {
+              return encodeURIComponent(k) + '=' + encodeURIComponent(queryParams[k]);
+            }).join('&');
+            url += (url.indexOf('?') >= 0 ? '&' : '?') + qs;
+          }
+        } catch (e) {}
+
+        // Only forward X-LLM-* headers when the endpoint declares them in its OpenAPI schema
+        var fetchHeaders = {};
+        var openapiSchema = self._openapiSchema || (settings.openapiSchema || null);
+        var needsLLM = endpointNeedsLLMHeaders(openapiSchema, s.editPath);
+        if (needsLLM) {
+          if (settings.baseUrl) fetchHeaders['X-LLM-Base-Url'] = settings.baseUrl;
+          if (settings.apiKey) fetchHeaders['X-LLM-Api-Key'] = settings.apiKey;
+          if (settings.modelId) fetchHeaders['X-LLM-Model-Id'] = settings.modelId;
+          if (settings.maxTokens != null && settings.maxTokens !== '') fetchHeaders['X-LLM-Max-Tokens'] = String(settings.maxTokens);
+          if (settings.temperature != null && settings.temperature !== '') fetchHeaders['X-LLM-Temperature'] = String(settings.temperature);
+        }
+
+        // Only add auth header if a tool API key is explicitly configured
+        if (toolSettings.apiKey) {
+          fetchHeaders['Authorization'] = 'Bearer ' + toolSettings.apiKey;
+        }
+
+        var fetchOpts = {
+          method: s.editMethod,
+          headers: fetchHeaders,
+        };
+
+        // Add body and Content-Type only for POST requests
+        if (s.editMethod === 'POST') {
+          fetchHeaders['Content-Type'] = 'application/json';
+          try {
+            fetchOpts.body = s.editBody;
+          } catch (e) {}
+        }
+
+        self.setState({ toolCallResponse: { status: 'loading', body: '' } });
+
+        console.log('[Tool Call]', s.editMethod, url, fetchOpts);
+
+        fetch(url, fetchOpts)
+          .then(function(res) {
+            return res.text().then(function(text) {
+              var responseObj = { status: res.status, statusText: res.statusText, body: text };
+              console.log('[Tool Call Response]', res.status, res.statusText, text.substring(0, 500));
+              self.setState({ toolCallResponse: responseObj });
+              // Auto-send result back to LLM
+              self.sendToolResult(responseObj);
+            });
+          })
+          .catch(function(err) {
+            var responseObj = { status: 0, statusText: 'Network Error', body: err.message };
+            console.error('[Tool Call Error]', err);
+            self.setState({ toolCallResponse: responseObj });
+            self.sendToolResult(responseObj);
+          });
+      }
+
+      sendToolResult(responseObj) {
+        var self = this;
+        var s = this.state;
+
+        // Check retry limit
+        if (s.toolRetryCount >= 3) {
+          var lastError = 'Status ' + responseObj.status + ' ' + (responseObj.statusText || '');
+          var lastBody = (responseObj.body || '').substring(0, 500);
+          var errorDetail = lastError + (lastBody ? '\n\n```\n' + lastBody + '\n```' : '');
+          console.error('[Tool Call] Max retries reached. Last error:', lastError, lastBody);
+          self.addMessage({
+            role: 'assistant',
+            content: 'Max tool call retries (3) reached. Last error: ' + errorDetail + '\n\nPlease try a different approach.',
+            messageId: generateMessageId()
+          });
+          self.setState({ pendingToolCall: null, isTyping: false });
+          return;
+        }
+
+        var toolCallId = s.pendingToolCall ? s.pendingToolCall.id : 'call_unknown';
+
+        // Truncate response body to 4000 chars
+        var truncatedBody = (responseObj.body || '').substring(0, 4000);
+        var resultContent = 'Status: ' + responseObj.status + ' ' + (responseObj.statusText || '') + '\n\n' + truncatedBody;
+
+        // Build the tool result message
+        var toolResultMsg = {
+          role: 'tool',
+          content: resultContent,
+          tool_call_id: toolCallId,
+          messageId: generateMessageId(),
+          _displayContent: 'Tool result: Status ' + responseObj.status
+        };
+
+        // Build API messages from current state PLUS the tool result we're about to add.
+        // We can't rely on setState having applied yet, so we construct the list explicitly.
+        var currentHistory = (self.state.chatHistory || []).slice();
+        // The last message in history should be the assistant tool_calls message
+        // (added when the tool call was detected). Append the tool result after it.
+        currentHistory.push(toolResultMsg);
+
+        var apiMessages = currentHistory.map(function(m) {
+          var msg = { role: m.role };
+          if (m.content != null) msg.content = m.content;
+          if (m.tool_calls) msg.tool_calls = m.tool_calls;
+          if (m.tool_call_id) msg.tool_call_id = m.tool_call_id;
+          if (!m.tool_calls && msg.content == null) msg.content = m._displayContent || '';
+          return msg;
         });
 
-        // Add user message to local state
-        self.addMessage(userMsg);
-        // Also add empty assistant message immediately so it persists in chatHistory
-        self.addMessage({ role: 'assistant', content: '', messageId: streamMsgId });
-        
-        // Store cancelToken on the class, not state (avoid re-renders)
-        self._currentCancelToken = new AbortController();
-        
+        // Now add to UI state
+        self.addMessage(toolResultMsg);
+
+        var streamMsgId = generateMessageId();
+        var isError = responseObj.status < 200 || responseObj.status >= 300;
+        self.setState({
+          pendingToolCall: null,
+          toolRetryCount: isError ? s.toolRetryCount + 1 : 0,
+        });
+
+        var fullSchema = null;
+        try {
+          var storedSettings = loadFromStorage();
+          if (storedSettings.openapiSchema) fullSchema = storedSettings.openapiSchema;
+        } catch (e) {}
+
+        self._streamLLMResponse(apiMessages, streamMsgId, fullSchema);
+      }
+
+      // ── Shared streaming helper ─────────────────────────────────────────────
+      _streamLLMResponse(apiMessages, streamMsgId, fullSchema) {
+        var self = this;
         var settings = loadFromStorage();
+        var toolSettings = loadToolSettings();
 
         var scrollToBottom = function() {
           var el = document.getElementById('llm-chat-messages');
           if (el) el.scrollTop = el.scrollHeight;
         };
 
+        // Add empty assistant message immediately so it persists in chatHistory
+        self.addMessage({ role: 'assistant', content: '', messageId: streamMsgId });
+
+        self._currentCancelToken = new AbortController();
+        self.setState({ isTyping: true });
+
+        var accumulated = "";
+        var currentStreamMessageId = streamMsgId;
+
+        // Tool calls accumulator
+        var accumulatedToolCalls = {};
+
         var finalize = function(content, saveContent) {
-          // Update the assistant message in chatHistory with final content
           if (saveContent && content && content.trim() && content !== "*(cancelled)*") {
             self.addMessage({ role: 'assistant', content: content, messageId: streamMsgId });
           }
           self._currentCancelToken = null;
-          self.setState({ 
-            isTyping: false,
-          });
+          self.setState({ isTyping: false });
           setTimeout(scrollToBottom, 30);
         };
 
-        // Track accumulated content at handleSend scope so cancel/catch can access it
-        var accumulated = "";
-        
-        // Track the messageId of the message being streamed to update the correct message
-        var currentStreamMessageId = streamMsgId;
-
-        // Get full OpenAPI schema from localStorage or fetch if not available
-        var getOpenApiSchema = function() {
-            try {
-                var storedSettings = loadFromStorage();
-                if (storedSettings.openapiSchema) {
-                    return storedSettings.openapiSchema;
-                }
-            } catch (e) {
-                // Ignore errors
-            }
-            return null;
+        // Build request body
+        var requestBody = {
+          messages: apiMessages,
+          openapi_schema: fullSchema,
         };
+        if (toolSettings.enableTools) {
+          requestBody.enable_tools = true;
+        }
 
-        var fullSchema = getOpenApiSchema();
-        
         fetch("/llm-chat", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            // Only include non-empty header values
             "X-LLM-Base-Url": settings.baseUrl || "",
             "X-LLM-Api-Key": settings.apiKey || "",
             "X-LLM-Model-Id": settings.modelId || "",
             "X-LLM-Max-Tokens": (settings.maxTokens != null && settings.maxTokens !== '') ? String(settings.maxTokens) : "",
             "X-LLM-Temperature": (settings.temperature != null && settings.temperature !== '') ? String(settings.temperature) : "",
           },
-          body: JSON.stringify({
-            messages: apiMessages,
-            openapi_schema: fullSchema
-          }),
+          body: JSON.stringify(requestBody),
           signal: self._currentCancelToken.signal
         })
           .then(function (res) {
@@ -667,7 +918,7 @@
                   var payload = line.substring(6);
 
                   if (payload === "[DONE]") {
-                    finalize(accumulated || "Sorry, I couldn't get a response.");
+                    finalize(accumulated || "Sorry, I couldn't get a response.", true);
                     return;
                   }
 
@@ -677,12 +928,16 @@
                       finalize("Error: " + chunk.error + (chunk.details ? ": " + chunk.details : ""), false);
                       return;
                     }
-                    if (chunk.choices && chunk.choices[0] && chunk.choices[0].delta && chunk.choices[0].delta.content) {
-                      accumulated += chunk.choices[0].delta.content;
-                      // Update the last assistant message in chatHistory with streaming content
+
+                    var choice = chunk.choices && chunk.choices[0];
+                    if (!choice) continue;
+
+                    // Accumulate content deltas
+                    if (choice.delta && choice.delta.content) {
+                      accumulated += choice.delta.content;
                       self.setState(function (prev) {
                         var history = prev.chatHistory || [];
-                        if (history.length > 0 && history[history.length - 1].role === 'assistant' && 
+                        if (history.length > 0 && history[history.length - 1].role === 'assistant' &&
                             history[history.length - 1].messageId === currentStreamMessageId) {
                           var updated = history.slice(0, -1).concat([{
                             role: 'assistant',
@@ -695,6 +950,78 @@
                         return {};
                       });
                       scrollToBottom();
+                    }
+
+                    // Accumulate tool_calls deltas
+                    if (choice.delta && choice.delta.tool_calls) {
+                      choice.delta.tool_calls.forEach(function(tc) {
+                        var idx = tc.index != null ? tc.index : 0;
+                        if (!accumulatedToolCalls[idx]) {
+                          accumulatedToolCalls[idx] = { id: '', function: { name: '', arguments: '' } };
+                        }
+                        if (tc.id) accumulatedToolCalls[idx].id = tc.id;
+                        if (tc.function) {
+                          if (tc.function.name) accumulatedToolCalls[idx].function.name = tc.function.name;
+                          if (tc.function.arguments) accumulatedToolCalls[idx].function.arguments += tc.function.arguments;
+                        }
+                      });
+                    }
+
+                    // Detect tool_calls finish
+                    if (choice.finish_reason === "tool_calls") {
+                      var toolCallsList = Object.keys(accumulatedToolCalls).map(function(k) {
+                        return accumulatedToolCalls[k];
+                      });
+
+                      if (toolCallsList.length > 0) {
+                        var tc = toolCallsList[0]; // Handle first tool call
+                        var args = {};
+                        try {
+                          args = JSON.parse(tc.function.arguments || '{}');
+                        } catch (e) {
+                          args = {};
+                        }
+
+                        // Store the assistant message with tool_calls for later (added on Execute)
+                        var assistantToolMsg = {
+                          role: 'assistant',
+                          content: null,
+                          tool_calls: toolCallsList.map(function(t) {
+                            return { id: t.id, type: 'function', function: { name: t.function.name, arguments: t.function.arguments } };
+                          }),
+                          messageId: streamMsgId
+                        };
+                        self._lastToolCallAssistantMsg = assistantToolMsg;
+                        self._pendingToolCallMsg = assistantToolMsg;
+
+                        // Remove the empty streaming placeholder from chat history
+                        self.setState(function(prev) {
+                          var history = (prev.chatHistory || []).filter(function(m) {
+                            return m.messageId !== streamMsgId;
+                          });
+                          saveChatHistory(history);
+                          return { chatHistory: history };
+                        });
+
+                        // Populate tool call panel
+                        self.setState({
+                          isTyping: false,
+                          pendingToolCall: tc,
+                          editMethod: args.method || 'GET',
+                          editPath: args.path || '',
+                          editQueryParams: JSON.stringify(args.query_params || {}, null, 2),
+                          editPathParams: JSON.stringify(args.path_params || {}, null, 2),
+                          editBody: JSON.stringify(args.body || {}, null, 2),
+                          toolCallResponse: null,
+                        });
+                        self._currentCancelToken = null;
+
+                        // Auto-execute if enabled
+                        if (toolSettings.autoExecute) {
+                          setTimeout(function() { self.handleExecuteToolCall(); }, 100);
+                        }
+                        return; // Don't continue processing
+                      }
                     }
                   } catch (e) {
                     // skip unparseable chunks
@@ -716,6 +1043,42 @@
           });
 
         setTimeout(scrollToBottom, 50);
+      }
+
+      handleSend() {
+        if (!this.state.input.trim() || this.state.isTyping) return;
+
+        var self = this;
+        var userInput = this.state.input.trim();
+        var msgId = generateMessageId();
+        var streamMsgId = generateMessageId();
+
+        // Clear input
+        self._pendingToolCallMsg = null;
+        self.setState({ input: "", pendingToolCall: null, toolCallResponse: null, toolRetryCount: 0 });
+
+        // Build API messages from current history + new user message
+        var userMsg = { role: 'user', content: userInput, messageId: msgId };
+        var currentHistory = self.state.chatHistory || [];
+        var apiMessages = currentHistory.concat([userMsg]).map(function (m) {
+          var msg = { role: m.role };
+          if (m.content != null) msg.content = m.content;
+          if (m.tool_calls) msg.tool_calls = m.tool_calls;
+          if (m.tool_call_id) msg.tool_call_id = m.tool_call_id;
+          // Ensure content exists for regular messages
+          if (!m.tool_calls && msg.content == null) msg.content = m._displayContent || '';
+          return msg;
+        });
+
+        self.addMessage(userMsg);
+
+        var fullSchema = null;
+        try {
+          var storedSettings = loadFromStorage();
+          if (storedSettings.openapiSchema) fullSchema = storedSettings.openapiSchema;
+        } catch (e) {}
+
+        self._streamLLMResponse(apiMessages, streamMsgId, fullSchema);
       }
 
       setHeaderHover(timestamp, show) {
@@ -764,35 +1127,225 @@
         var React = system.React;
         var self = this;
         var isUser = msg.role === 'user';
-        
+        var isTool = msg.role === 'tool';
+        var isToolCallMsg = msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0;
+
         // Check if this is the last assistant message and we're currently typing
         var chatHistory = self.state.chatHistory || [];
-        var isStreamingThisMessage = self.state.isTyping && 
-          !isUser && 
+        var isStreamingThisMessage = self.state.isTyping &&
+          !isUser &&
           idx === chatHistory.length - 1 &&
           msg.role === 'assistant';
-        
+
+        // Tool call message (assistant with tool_calls, no content)
+        if (isToolCallMsg) {
+          var toolArgs = msg._toolArgs || {};
+          var tcMethod = toolArgs.method || 'GET';
+          var tcPath = toolArgs.path || '';
+          var openapiSchema = null;
+          try { var stored = loadFromStorage(); openapiSchema = stored.openapiSchema || null; } catch (e) {}
+          var curlForMsg = buildCurlFromArgs(toolArgs, openapiSchema);
+          var curlCopyId = 'tc_curl_' + (msg.messageId || idx);
+
+          return React.createElement(
+            "div",
+            { key: msg.messageId || msg.timestamp, className: "llm-chat-message-wrapper" },
+            React.createElement(
+              "div",
+              {
+                className: "llm-chat-message assistant",
+                style: { maxWidth: "90%", borderLeft: "3px solid #8b5cf6" }
+              },
+              React.createElement("div", { className: "llm-avatar assistant-avatar" }, "\uD83D\uDD27"),
+              React.createElement(
+                "div",
+                { style: { flex: 1, minWidth: 0 } },
+                // Header with method badge
+                React.createElement(
+                  "div",
+                  { style: { display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px" } },
+                  React.createElement("span", { style: { fontSize: "13px", fontWeight: "600", color: "#8b5cf6" } }, "api_request"),
+                  React.createElement("span", {
+                    style: {
+                      background: tcMethod === 'POST' ? '#f59e0b' : '#10b981',
+                      color: '#fff',
+                      padding: '1px 6px',
+                      borderRadius: '3px',
+                      fontSize: '11px',
+                      fontWeight: '600',
+                      fontFamily: "'Consolas', 'Monaco', monospace",
+                    }
+                  }, tcMethod),
+                  React.createElement("span", {
+                    style: { fontSize: "13px", fontFamily: "'Consolas', 'Monaco', monospace", color: "var(--theme-text-primary)" }
+                  }, tcPath)
+                ),
+                // Curl command block
+                React.createElement(
+                  "div",
+                  { style: { position: "relative" } },
+                  React.createElement(
+                    "pre",
+                    {
+                      style: {
+                        background: "var(--theme-input-bg)",
+                        border: "1px solid var(--theme-border-color)",
+                        borderRadius: "6px",
+                        padding: "8px 10px",
+                        fontSize: "11px",
+                        fontFamily: "'Consolas', 'Monaco', monospace",
+                        color: "var(--theme-text-primary)",
+                        whiteSpace: "pre-wrap",
+                        wordBreak: "break-all",
+                        margin: 0,
+                        lineHeight: "1.4",
+                        maxHeight: "120px",
+                        overflowY: "auto",
+                      }
+                    },
+                    curlForMsg
+                  ),
+                  React.createElement(
+                    "button",
+                    {
+                      onClick: function() { self.copyToClipboard(curlForMsg, curlCopyId); },
+                      title: "Copy curl command",
+                      style: {
+                        position: "absolute",
+                        top: "4px",
+                        right: "4px",
+                        background: "var(--theme-secondary)",
+                        border: "1px solid var(--theme-border-color)",
+                        borderRadius: "4px",
+                        color: "var(--theme-text-secondary)",
+                        padding: "2px 6px",
+                        cursor: "pointer",
+                        fontSize: "10px",
+                        transition: "all 0.15s ease",
+                      }
+                    },
+                    self.state.copiedMessageId === curlCopyId ? "\u2705" : "\uD83D\uDCCB curl"
+                  )
+                ),
+                // Params summary if any non-trivial params
+                (toolArgs.query_params && Object.keys(toolArgs.query_params).length > 0) ||
+                (toolArgs.body && Object.keys(toolArgs.body).length > 0)
+                  ? React.createElement("div", { style: { marginTop: "4px", fontSize: "11px", color: "var(--theme-text-secondary)" } },
+                      toolArgs.query_params && Object.keys(toolArgs.query_params).length > 0
+                        ? React.createElement("span", null, "Query: " + JSON.stringify(toolArgs.query_params) + "  ")
+                        : null,
+                      toolArgs.body && Object.keys(toolArgs.body).length > 0
+                        ? React.createElement("span", null, "Body: " + JSON.stringify(toolArgs.body))
+                        : null
+                    )
+                  : null
+              )
+            )
+          );
+        }
+
+        // Tool result message — show status and response body inline
+        if (isTool) {
+          var statusLine = msg._displayContent || 'Tool result';
+          // Parse out the response body from content (format: "Status: NNN ...\n\n<body>")
+          var responseBody = '';
+          var statusColor = '#10b981';
+          if (msg.content) {
+            var parts = msg.content.split('\n\n');
+            var statusPart = parts[0] || '';
+            responseBody = parts.slice(1).join('\n\n');
+            // Extract status code for coloring
+            var statusMatch = statusPart.match(/Status:\s*(\d+)/);
+            if (statusMatch) {
+              var code = parseInt(statusMatch[1]);
+              statusColor = (code >= 200 && code < 300) ? '#10b981' : '#f87171';
+            }
+          }
+          // Try to pretty-print JSON
+          var formattedBody = responseBody;
+          try {
+            var parsed = JSON.parse(responseBody);
+            formattedBody = JSON.stringify(parsed, null, 2);
+          } catch (e) {}
+
+          return React.createElement(
+            "div",
+            { key: msg.messageId || msg.timestamp, className: "llm-chat-message-wrapper" },
+            React.createElement(
+              "div",
+              {
+                className: "llm-chat-message assistant",
+                style: { maxWidth: "90%", borderLeft: "3px solid " + statusColor }
+              },
+              React.createElement("div", { className: "llm-avatar assistant-avatar", style: { background: "linear-gradient(135deg, " + statusColor + ", #059669)" } }, "\uD83D\uDCE1"),
+              React.createElement(
+                "div",
+                { style: { flex: 1, minWidth: 0 } },
+                React.createElement(
+                  "div",
+                  {
+                    className: "llm-chat-message-header",
+                    style: { display: "flex", justifyContent: "space-between", alignItems: "center" }
+                  },
+                  React.createElement("span", { style: { fontSize: "13px", fontWeight: "600", color: statusColor } }, statusLine),
+                  React.createElement(
+                    "button",
+                    {
+                      className: "llm-copy-btn",
+                      onClick: function() { self.copyToClipboard(responseBody, msg.messageId); },
+                      title: "Copy response",
+                      style: Object.assign({}, styles.copyMessageBtn, { opacity: 1 })
+                    },
+                    self.state.copiedMessageId === msg.messageId ? "\u2705" : "\uD83D\uDCCB"
+                  )
+                ),
+                formattedBody ? React.createElement(
+                  "pre",
+                  {
+                    style: {
+                      background: "var(--theme-input-bg)",
+                      border: "1px solid var(--theme-border-color)",
+                      borderRadius: "6px",
+                      padding: "8px 10px",
+                      fontSize: "11px",
+                      fontFamily: "'Consolas', 'Monaco', monospace",
+                      maxHeight: "200px",
+                      overflowY: "auto",
+                      whiteSpace: "pre-wrap",
+                      wordBreak: "break-all",
+                      color: "var(--theme-text-primary)",
+                      margin: "6px 0 0 0",
+                      lineHeight: "1.4",
+                    }
+                  },
+                  formattedBody.substring(0, 2000)
+                ) : null
+              )
+            )
+          );
+        }
+
         return React.createElement(
           "div",
           { key: msg.messageId || msg.timestamp, className: "llm-chat-message-wrapper" },
           React.createElement(
             "div",
-            { 
+            {
               className: "llm-chat-message " + (isUser ? 'user' : 'assistant'),
               style: { maxWidth: isUser ? "85%" : "90%" }
             },
-            !isUser && React.createElement("div", { 
+            !isUser && React.createElement("div", {
               className: "llm-avatar assistant-avatar",
               title: "AI Assistant"
-            }, "🤖"),
+            }, "\uD83E\uDD16"),
             React.createElement(
               "div",
-              { 
+              {
                 className: "llm-chat-message-header",
                 onMouseEnter: function() { self.setHeaderHover(msg.messageId || msg.timestamp, true); },
                 onMouseLeave: function() { self.setHeaderHover(msg.messageId || msg.timestamp, false); }
               },
-              isUser 
+              isUser
                 ? React.createElement("span", { className: "llm-user-label" }, "You")
                 : React.createElement("div", { style: { display: "flex", alignItems: "center", gap: "6px" } },
                     React.createElement("span", { className: "llm-assistant-label" }, "Assistant"),
@@ -810,7 +1363,7 @@
                     opacity: (self.state.headerHover[msg.messageId || msg.timestamp] || self.state.copiedMessageId === msg.messageId) && !isStreamingThisMessage ? 1 : 0
                   })
                 },
-                self.state.copiedMessageId === msg.messageId ? "✅" : "📋"
+                self.state.copiedMessageId === msg.messageId ? "\u2705" : "\uD83D\uDCCB"
               )
             ),
             React.createElement(
@@ -846,6 +1399,226 @@
         });
       }
 
+      _buildCurlCommand() {
+        var s = this.state;
+        var toolSettings = loadToolSettings();
+        var settings = loadFromStorage();
+
+        // Build the resolved URL
+        var url = s.editPath;
+        try {
+          var pathParams = JSON.parse(s.editPathParams || '{}');
+          Object.keys(pathParams).forEach(function(key) {
+            url = url.replace('{' + key + '}', encodeURIComponent(pathParams[key]));
+          });
+        } catch (e) {}
+
+        try {
+          var queryParams = JSON.parse(s.editQueryParams || '{}');
+          var queryKeys = Object.keys(queryParams);
+          if (queryKeys.length > 0) {
+            var qs = queryKeys.map(function(k) {
+              return encodeURIComponent(k) + '=' + encodeURIComponent(queryParams[k]);
+            }).join('&');
+            url += (url.indexOf('?') >= 0 ? '&' : '?') + qs;
+          }
+        } catch (e) {}
+
+        // Use current origin for relative paths
+        var fullUrl = url.startsWith('http') ? url : window.location.origin + url;
+
+        var parts = ['curl'];
+        if (s.editMethod !== 'GET') {
+          parts.push('-X ' + s.editMethod);
+        }
+        parts.push("'" + fullUrl + "'");
+
+        // Only include X-LLM-* headers when the endpoint declares them
+        var openapiSchema = settings.openapiSchema || null;
+        if (endpointNeedsLLMHeaders(openapiSchema, s.editPath)) {
+          if (settings.baseUrl) parts.push("-H 'X-LLM-Base-Url: " + settings.baseUrl + "'");
+          if (settings.apiKey) parts.push("-H 'X-LLM-Api-Key: " + settings.apiKey + "'");
+          if (settings.modelId) parts.push("-H 'X-LLM-Model-Id: " + settings.modelId + "'");
+          if (settings.maxTokens != null && settings.maxTokens !== '') parts.push("-H 'X-LLM-Max-Tokens: " + settings.maxTokens + "'");
+          if (settings.temperature != null && settings.temperature !== '') parts.push("-H 'X-LLM-Temperature: " + settings.temperature + "'");
+        }
+
+        if (toolSettings.apiKey) {
+          parts.push("-H 'Authorization: Bearer " + toolSettings.apiKey + "'");
+        }
+
+        if (s.editMethod === 'POST') {
+          parts.push("-H 'Content-Type: application/json'");
+          try {
+            var body = JSON.parse(s.editBody || '{}');
+            if (Object.keys(body).length > 0) {
+              parts.push("-d '" + JSON.stringify(body) + "'");
+            }
+          } catch (e) {
+            if (s.editBody && s.editBody.trim()) {
+              parts.push("-d '" + s.editBody.trim() + "'");
+            }
+          }
+        }
+
+        return parts.join(' \\\n  ');
+      }
+
+      renderToolCallPanel() {
+        var React = system.React;
+        var self = this;
+        var s = this.state;
+
+        if (!s.pendingToolCall) return null;
+
+        var panelStyle = {
+          padding: "10px 12px",
+          borderTop: "1px solid var(--theme-border-color)",
+          background: "var(--theme-panel-bg)",
+          fontSize: "13px",
+        };
+        var inputStyle = {
+          background: "var(--theme-input-bg)",
+          border: "1px solid var(--theme-border-color)",
+          borderRadius: "4px",
+          color: "var(--theme-text-primary)",
+          padding: "5px 8px",
+          fontSize: "12px",
+          fontFamily: "'Consolas', 'Monaco', monospace",
+          width: "100%",
+          boxSizing: "border-box",
+        };
+        var labelStyle = { color: "var(--theme-text-secondary)", fontSize: "11px", marginBottom: "2px" };
+        var headerStyle = { color: "var(--theme-text-primary)", fontSize: "13px", fontWeight: "600", marginBottom: "6px", display: "flex", alignItems: "center", gap: "6px", justifyContent: "space-between" };
+        var smallBtnStyle = {
+          background: "transparent",
+          border: "1px solid var(--theme-border-color)",
+          borderRadius: "4px",
+          color: "var(--theme-text-secondary)",
+          padding: "3px 8px",
+          cursor: "pointer",
+          fontSize: "11px",
+          transition: "all 0.15s ease",
+        };
+
+        var curlCmd = self._buildCurlCommand();
+
+        return React.createElement(
+          "div",
+          { style: panelStyle },
+          // Header
+          React.createElement("div", { style: headerStyle },
+            React.createElement("div", { style: { display: "flex", alignItems: "center", gap: "6px" } },
+              "\uD83D\uDD27 ",
+              React.createElement("span", null, "api_request"),
+              React.createElement("span", { style: { color: "var(--theme-text-secondary)", fontWeight: "400", fontSize: "12px" } },
+                s.editMethod + " " + s.editPath
+              )
+            ),
+            React.createElement(
+              "div",
+              { style: { display: "flex", gap: "4px" } },
+              React.createElement(
+                "button",
+                {
+                  onClick: function() {
+                    navigator.clipboard.writeText(curlCmd).then(function() {
+                      self.setState({ _curlCopied: true });
+                      setTimeout(function() { self.setState({ _curlCopied: false }); }, 1500);
+                    });
+                  },
+                  style: Object.assign({}, smallBtnStyle, s._curlCopied ? { color: "#10b981", borderColor: "#10b981" } : {}),
+                  title: "Copy as curl"
+                },
+                s._curlCopied ? "\u2705" : "\uD83D\uDCCB curl"
+              ),
+              React.createElement(
+                "button",
+                {
+                  onClick: function() {
+                    var params = { method: s.editMethod, path: s.editPath };
+                    try { var qp = JSON.parse(s.editQueryParams || '{}'); if (Object.keys(qp).length > 0) params.query_params = qp; } catch (e) {}
+                    try { var pp = JSON.parse(s.editPathParams || '{}'); if (Object.keys(pp).length > 0) params.path_params = pp; } catch (e) {}
+                    if (s.editMethod === 'POST') { try { params.body = JSON.parse(s.editBody || '{}'); } catch (e) { params.body = s.editBody; } }
+                    navigator.clipboard.writeText(JSON.stringify(params, null, 2)).then(function() {
+                      self.setState({ _jsonCopied: true });
+                      setTimeout(function() { self.setState({ _jsonCopied: false }); }, 1500);
+                    });
+                  },
+                  style: Object.assign({}, smallBtnStyle, s._jsonCopied ? { color: "#10b981", borderColor: "#10b981" } : {}),
+                  title: "Copy as JSON"
+                },
+                s._jsonCopied ? "\u2705" : "\uD83D\uDCCB JSON"
+              )
+            )
+          ),
+          // Curl preview
+          React.createElement(
+            "pre",
+            {
+              style: {
+                background: "var(--theme-input-bg)",
+                border: "1px solid var(--theme-border-color)",
+                borderRadius: "6px",
+                padding: "8px 10px",
+                fontSize: "11px",
+                fontFamily: "'Consolas', 'Monaco', monospace",
+                color: "var(--theme-text-primary)",
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-all",
+                margin: "0 0 8px 0",
+                lineHeight: "1.4",
+                maxHeight: "100px",
+                overflowY: "auto",
+              }
+            },
+            curlCmd
+          ),
+          // Compact editable fields
+          React.createElement("div", { style: { display: "flex", gap: "6px", marginBottom: "6px", alignItems: "flex-end" } },
+            React.createElement(
+              "div",
+              { style: { flex: "0 0 80px" } },
+              React.createElement("div", { style: labelStyle }, "Method"),
+              React.createElement("select", { value: s.editMethod, onChange: function(e) { self.setState({ editMethod: e.target.value }); }, style: inputStyle },
+                React.createElement("option", { value: "GET" }, "GET"),
+                React.createElement("option", { value: "POST" }, "POST")
+              )
+            ),
+            React.createElement(
+              "div",
+              { style: { flex: 1 } },
+              React.createElement("div", { style: labelStyle }, "Path"),
+              React.createElement("input", { type: "text", value: s.editPath, onChange: function(e) { self.setState({ editPath: e.target.value }); }, style: inputStyle })
+            ),
+            React.createElement(
+              "div",
+              { style: { flex: 1 } },
+              React.createElement("div", { style: labelStyle }, "Query"),
+              React.createElement("input", { type: "text", value: s.editQueryParams, onChange: function(e) { self.setState({ editQueryParams: e.target.value }); }, style: inputStyle, placeholder: '{}' })
+            )
+          ),
+          // Body for POST
+          s.editMethod === 'POST' && React.createElement("div", { style: { marginBottom: "6px" } },
+            React.createElement("div", { style: labelStyle }, "Body"),
+            React.createElement("textarea", { value: s.editBody, onChange: function(e) { self.setState({ editBody: e.target.value }); }, style: Object.assign({}, inputStyle, { resize: "vertical", minHeight: "36px" }), rows: 2, placeholder: '{}' })
+          ),
+          // Buttons
+          React.createElement(
+            "div",
+            { style: { display: "flex", gap: "8px" } },
+            React.createElement("button", {
+              onClick: self.handleExecuteToolCall,
+              style: { background: "var(--theme-primary)", color: "#fff", border: "none", borderRadius: "4px", padding: "5px 14px", cursor: "pointer", fontSize: "12px", fontWeight: "500" }
+            }, "\u25B6 Execute"),
+            React.createElement("button", {
+              onClick: function() { self._pendingToolCallMsg = null; self.setState({ pendingToolCall: null, toolCallResponse: null }); },
+              style: { background: "var(--theme-accent)", color: "#fff", border: "none", borderRadius: "4px", padding: "5px 14px", cursor: "pointer", fontSize: "12px" }
+            }, "Dismiss")
+          )
+        );
+      }
+
       render() {
         var React = system.React;
         var self = this;
@@ -872,6 +1645,9 @@
                 this.renderTypingIndicator()
               )
             : null,
+          // Tool call panel rendered inline in chat messages (see renderMessage)
+          // Show pending tool call panel below messages if waiting for user action
+          this.state.pendingToolCall && !this.state.isTyping ? this.renderToolCallPanel() : null,
           React.createElement(
             "div",
             { style: styles.chatInputArea },
@@ -940,6 +1716,7 @@
         super(props);
         // Initialize with safe defaults from stored settings
         var s = loadFromStorage();
+        var ts = loadToolSettings();
         this.state = {
           baseUrl: s.baseUrl || DEFAULT_STATE.baseUrl,
           apiKey: s.apiKey || DEFAULT_STATE.apiKey,
@@ -952,6 +1729,10 @@
           connectionStatus: "disconnected",
           settingsOpen: false,
           lastError: "",
+          // Tool calling settings
+          enableTools: ts.enableTools || false,
+          autoExecute: ts.autoExecute || false,
+          toolApiKey: ts.apiKey || '',
         };
         this.handleSaveSettings = this.handleSaveSettings.bind(this);
         this.handleTestConnection = this.handleTestConnection.bind(this);
@@ -997,6 +1778,12 @@
           provider: this.state.provider,
         };
         saveToStorage(settings);
+        // Save tool calling settings
+        saveToolSettings({
+          enableTools: this.state.enableTools,
+          autoExecute: this.state.autoExecute,
+          apiKey: this.state.toolApiKey,
+        });
         // Also ensure current theme is persisted to localStorage
         saveTheme({ theme: this.state.theme, customColors: this.state.customColors });
         // Don't change connection status, just save
@@ -1301,6 +2088,69 @@
           )
         );
 
+        // Tool calling settings
+        var checkboxStyle = { marginRight: "8px", cursor: "pointer" };
+        var checkboxLabelStyle = { color: "var(--theme-text-primary)", fontSize: "13px", cursor: "pointer", display: "flex", alignItems: "center" };
+        var toolCallSettings = React.createElement(
+          "div",
+          { style: { marginBottom: "24px", paddingBottom: "20px", borderBottom: "1px solid var(--theme-border-color)" } },
+          React.createElement("h3", { style: { color: "var(--theme-text-primary)", fontSize: "14px", fontWeight: "600", marginBottom: "12px" } }, "Tool Calling (API Execution)"),
+          React.createElement(
+            "div",
+            { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "12px 20px", alignItems: "start" } },
+            React.createElement(
+              "div",
+              { style: fieldStyle },
+              React.createElement(
+                "label",
+                { style: checkboxLabelStyle },
+                React.createElement("input", {
+                  type: "checkbox",
+                  checked: s.enableTools,
+                  onChange: function(e) { self.setState({ enableTools: e.target.checked }); },
+                  style: checkboxStyle
+                }),
+                "Enable API Tool Calling"
+              ),
+              React.createElement("div", { style: { color: "var(--theme-text-secondary)", fontSize: "11px", marginTop: "4px" } },
+                "Allow the LLM to execute API calls"
+              )
+            ),
+            React.createElement(
+              "div",
+              { style: fieldStyle },
+              React.createElement(
+                "label",
+                { style: checkboxLabelStyle },
+                React.createElement("input", {
+                  type: "checkbox",
+                  checked: s.autoExecute,
+                  onChange: function(e) { self.setState({ autoExecute: e.target.checked }); },
+                  style: checkboxStyle,
+                  disabled: !s.enableTools
+                }),
+                "Auto-Execute"
+              ),
+              React.createElement("div", { style: { color: "var(--theme-text-secondary)", fontSize: "11px", marginTop: "4px" } },
+                "Execute tool calls without confirmation"
+              )
+            ),
+            React.createElement(
+              "div",
+              { style: fieldStyle },
+              React.createElement("label", { style: labelStyle }, "API Key for Tool Calls"),
+              React.createElement("input", {
+                type: "password",
+                value: s.toolApiKey,
+                placeholder: "Bearer token for target API",
+                style: inputStyle,
+                disabled: !s.enableTools,
+                onChange: function(e) { self.setState({ toolApiKey: e.target.value }); }
+              })
+            )
+          )
+        );
+
         var saveButton = React.createElement(
           "button",
           {
@@ -1386,6 +2236,7 @@
               )
             )
           ),
+          toolCallSettings,
           React.createElement(
             "div",
             { style: { display: "flex", alignItems: "center" } },
@@ -1416,9 +2267,8 @@
     chatContainer: {
       display: "flex",
       flexDirection: "column",
-      minHeight: "400px",
-      maxHeight: "65vh",
-      height: "calc(100vh - 200px)",
+      height: "calc(100vh - 90px)",
+      minHeight: "300px",
     },
     chatMessages: {
       flex: 1,
@@ -1638,7 +2488,7 @@
 
     // Chat container responsive
     '@media (max-width: 768px) {',
-    '  .llm-chat-container { height: calc(100vh - 160px) !important; max-height: none !important; }',
+    '  .llm-chat-container { height: calc(100vh - 80px) !important; }',
     '  .llm-chat-messages { padding: 8px; gap: 10px; }',
     '}',
   ].join('\n');

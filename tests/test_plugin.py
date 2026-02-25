@@ -656,13 +656,203 @@ def test_openapi_schema_takes_precedence_over_summary():
 def test_fetch_openapi_schema_in_chat_panel():
     """Test that the JavaScript fetches and stores OpenAPI schema."""
     client = TestClient(make_app())
-    
+
     # Get the docs page to verify JavaScript contains fetch logic
     html = client.get("/docs").text
-    
+
     # Check that the JavaScript includes OpenAPI schema fetching
     assert "fetchOpenApiSchema" in html or "/swagger-llm-static/llm-settings-plugin.js" in html
-    
+
     # Check that the JS file contains schema storage logic
     js_content = client.get("/swagger-llm-static/llm-settings-plugin.js").text
     assert "openapiSchema" in js_content
+
+
+# ── Tool Calling Tests ────────────────────────────────────────────────────────
+
+
+def test_build_api_request_tool_schema():
+    """Test that build_api_request_tool returns valid OpenAI function calling format."""
+    from swagger_llm.plugin import build_api_request_tool
+
+    schema = {
+        "paths": {
+            "/users": {
+                "get": {"summary": "List Users"},
+                "post": {"summary": "Create User"},
+            },
+            "/health": {
+                "get": {"summary": "Health Check"},
+            },
+        }
+    }
+
+    tool = build_api_request_tool(schema)
+
+    assert tool["type"] == "function"
+    assert tool["function"]["name"] == "api_request"
+    assert "parameters" in tool["function"]
+    params = tool["function"]["parameters"]
+    assert params["type"] == "object"
+    assert "method" in params["properties"]
+    assert "path" in params["properties"]
+    assert "query_params" in params["properties"]
+    assert "path_params" in params["properties"]
+    assert "body" in params["properties"]
+    assert params["required"] == ["method", "path"]
+
+    # Method enum should include GET and POST
+    method_enum = params["properties"]["method"]["enum"]
+    assert "GET" in method_enum
+    assert "POST" in method_enum
+
+    # Description should list endpoints
+    desc = tool["function"]["description"]
+    assert "/users" in desc
+    assert "/health" in desc
+    assert "List Users" in desc
+
+
+def test_build_api_request_tool_filters_get_post():
+    """Test that only GET and POST endpoints are included."""
+    from swagger_llm.plugin import build_api_request_tool
+
+    schema = {
+        "paths": {
+            "/users": {
+                "get": {"summary": "List Users"},
+                "delete": {"summary": "Delete User"},
+                "put": {"summary": "Update User"},
+            },
+        }
+    }
+
+    tool = build_api_request_tool(schema)
+    desc = tool["function"]["description"]
+
+    assert "GET /users" in desc
+    assert "DELETE" not in desc
+    assert "PUT" not in desc
+
+
+def test_llm_chat_enable_tools_payload():
+    """Test that enable_tools is accepted by /llm-chat endpoint."""
+    client = TestClient(make_app())
+
+    response = client.post(
+        "/llm-chat",
+        json={
+            "messages": [{"role": "user", "content": "Call the health endpoint"}],
+            "openapi_schema": {
+                "info": {"title": "Test", "version": "1.0"},
+                "paths": {
+                    "/health": {
+                        "get": {"summary": "Health", "responses": {"200": {"description": "OK"}}}
+                    }
+                }
+            },
+            "enable_tools": True,
+        },
+        headers={"X-LLM-Base-Url": "http://localhost:9999/v1"},
+    )
+
+    assert response.status_code == 200
+    assert "text/event-stream" in response.headers["content-type"]
+
+
+def test_llm_chat_message_serialization_with_tool_calls():
+    """Test that messages with tool_calls and tool_call_id are accepted."""
+    client = TestClient(make_app())
+
+    response = client.post(
+        "/llm-chat",
+        json={
+            "messages": [
+                {"role": "user", "content": "Call the health endpoint"},
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_123",
+                            "type": "function",
+                            "function": {
+                                "name": "api_request",
+                                "arguments": '{"method": "GET", "path": "/health"}',
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "content": "Status: 200 OK\n\n{\"status\": \"healthy\"}",
+                    "tool_call_id": "call_123",
+                },
+            ],
+            "enable_tools": True,
+        },
+        headers={"X-LLM-Base-Url": "http://localhost:9999/v1"},
+    )
+
+    assert response.status_code == 200
+    assert "text/event-stream" in response.headers["content-type"]
+
+
+def test_build_api_request_tool_llm_header_paths():
+    """Test that _llm_header_paths detects endpoints needing X-LLM-* headers."""
+    from swagger_llm.plugin import build_api_request_tool
+
+    schema = {
+        "paths": {
+            "/health": {
+                "get": {"summary": "Health Check", "parameters": []},
+            },
+            "/llm-chat": {
+                "post": {
+                    "summary": "Chat",
+                    "parameters": [
+                        {"name": "X-LLM-Base-Url", "in": "header", "required": False},
+                        {"name": "X-LLM-Api-Key", "in": "header", "required": False},
+                    ],
+                },
+            },
+            "/plain": {
+                "get": {
+                    "summary": "Plain endpoint",
+                    "parameters": [
+                        {"name": "Authorization", "in": "header", "required": False},
+                    ],
+                },
+            },
+        }
+    }
+
+    tool = build_api_request_tool(schema)
+    llm_paths = tool["_llm_header_paths"]
+
+    # Only /llm-chat should be detected as needing LLM headers
+    assert "/llm-chat" in llm_paths
+    assert "/health" not in llm_paths
+    assert "/plain" not in llm_paths
+
+
+def test_tool_result_message():
+    """Test that role='tool' messages are handled properly."""
+    client = TestClient(make_app())
+
+    response = client.post(
+        "/llm-chat",
+        json={
+            "messages": [
+                {"role": "user", "content": "test"},
+                {
+                    "role": "tool",
+                    "content": "Status: 200\nOK",
+                    "tool_call_id": "call_abc",
+                },
+            ],
+        },
+        headers={"X-LLM-Base-Url": "http://localhost:9999/v1"},
+    )
+
+    assert response.status_code == 200

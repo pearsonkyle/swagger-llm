@@ -2,7 +2,7 @@
 
 ![](examples/example.gif)
 
-> Add an LLM-enhanced API documentation to your FastAPI Swagger UI docs page.
+> Add an LLM interface to your API documentation to your FastAPI Swagger UI docs page.
 
 `swagger-llm-ui` injects a collapsible **LLM Settings** panel at the top of your
 FastAPI `/docs` page.  Users fill in their OpenAI-compatible API details (base URL,
@@ -99,3 +99,5 @@ pytest tests/
 ## License
 
 MIT
+
+- add authenticated endpoint to demo server and test the API Key for Tool Calls

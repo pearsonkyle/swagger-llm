@@ -8,7 +8,7 @@ Then open http://localhost:8000/docs
 from typing import Any, Dict, List, Optional
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -21,17 +21,15 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from swagger_llm import LLMConfig, get_llm_config, setup_llm_docs
 
 app = FastAPI(
-    title="swagger-llm-ui Demo",
-    version="0.2.0",
+    title="Demo Server",
+    version="0.3.0",
     description="""
-A demonstration of the swagger-llm-ui package with LLM-enhanced API documentation.
+A demonstration of the swagger-llm-plugin package with LLM-enhanced API documentation.
 
 Features:
-- LLM Settings panel to configure your OpenAI-compatible API
 - Provider presets for OpenAI, Anthropic, Ollama, LM Studio, vLLM
-- Connection testing with visual feedback
-- Interactive chat panel for API documentation questions
-- Automatic curl and code generation from API calls
+- Interactive chat panel
+- Tool calling
 """,
 )
 
@@ -54,14 +52,6 @@ class ChatRequest(BaseModel):
     temperature: Optional[float] = None
 
 
-class LLMSettingsRequest(BaseModel):
-    base_url: str
-    api_key: Optional[str] = None
-    model_id: str = "gpt-4"
-    max_tokens: int = 4096
-    temperature: float = 0.7
-
-
 # ── Utility Functions ────────────────────────────────────────────────────────
 
 
@@ -81,7 +71,7 @@ def build_headers(llm: LLMConfig) -> Dict[str, str]:
     return headers
 
 
-# ── Endpoints ────────────────────────────────────────────────────────────────
+# ── Endpoints (no LLM dependency) ────────────────────────────────────────────
 
 
 @app.get("/health", tags=["utility"])
@@ -92,17 +82,19 @@ async def health():
 
 @app.get("/info", tags=["utility"])
 async def info():
-    """Returns information about the LLM configuration."""
+    """Returns information about this demo server."""
     return {
-        "package_version": "0.2.0",
+        "package_version": "0.3.0",
         "features": [
             "LLM provider presets (OpenAI, Anthropic, Ollama, etc.)",
             "Connection testing with visual feedback",
             "Inline chat panel for API questions",
-            "Curl and code generation from API calls",
-            "Debounced settings save with auto-save",
+            "Tool calling with agentic retry loop",
         ],
     }
+
+
+# ── Endpoints (require LLM config via X-LLM-* headers) ──────────────────────
 
 
 @app.get("/models", tags=["models"])
@@ -180,18 +172,15 @@ async def chat_completions_stream(
     url = build_llm_url(llm.base_url, "/chat/completions")
     headers = build_headers(llm)
 
-    # For streaming, we need to set up the payload without max_tokens if not specified
     payload: Dict[str, Any] = {
         "model": body.model or llm.model_id,
         "messages": [m.model_dump() for m in body.messages],
         "temperature": body.temperature if body.temperature is not None else llm.temperature,
     }
 
-    # Add max_tokens only if specified
     if body.max_tokens:
         payload["max_tokens"] = body.max_tokens
 
-    # Add stream parameter
     if not payload.get("stream"):
         payload["stream"] = True
 
@@ -243,22 +232,6 @@ async def create_embeddings(
                 content={"error": f"Request failed: {exc}", "url": url},
                 status_code=502,
             )
-
-
-@app.get("/docs/settings", tags=["settings"])
-async def get_docs_settings():
-    """Get the current Swagger UI LLM settings (for debugging)."""
-    return {
-        "description": "These settings are stored in browser localStorage and injected as headers",
-        "settings_stored_in": "localStorage (swagger-llm-settings key)",
-        "headers_injected": [
-            "X-LLM-Base-Url",
-            "X-LLM-Api-Key", 
-            "X-LLM-Model-Id",
-            "X-LLM-Max-Tokens",
-            "X-LLM-Temperature",
-        ],
-    }
 
 
 # ── Error handlers ───────────────────────────────────────────────────────────

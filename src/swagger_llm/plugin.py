@@ -28,13 +28,16 @@ _llm_apps: Set[int] = set()
 
 class _LLMChatMessage(BaseModel):
     role: str
-    content: str
+    content: Optional[str] = None
+    tool_calls: Optional[List[Dict[str, Any]]] = None
+    tool_call_id: Optional[str] = None
 
 
 class LLMChatRequest(BaseModel):
     messages: List[_LLMChatMessage]
     openapi_summary: Optional[str] = None
     openapi_schema: Optional[Dict[str, Any]] = None  # Full OpenAPI schema
+    enable_tools: bool = False
 
 
 def get_swagger_ui_html(
@@ -245,6 +248,124 @@ def build_openapi_context(schema: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _endpoints_needing_llm_headers(schema: Dict[str, Any]) -> List[str]:
+    """Return a list of endpoint paths whose operations declare X-LLM-* header parameters.
+
+    This is used by the frontend to decide whether to forward LLM headers
+    on a per-endpoint basis rather than sending them on every tool call.
+    """
+    result: List[str] = []
+    paths = schema.get("paths", {}) if schema else {}
+
+    for path, path_item in paths.items():
+        if not isinstance(path_item, dict):
+            continue
+        needs_llm = False
+        for method in ("get", "post", "put", "patch", "delete"):
+            op = path_item.get(method)
+            if not isinstance(op, dict):
+                continue
+            for param in op.get("parameters", []):
+                if not isinstance(param, dict):
+                    continue
+                if (
+                    param.get("in") == "header"
+                    and isinstance(param.get("name"), str)
+                    and param["name"].lower().startswith("x-llm-")
+                ):
+                    needs_llm = True
+                    break
+            if needs_llm:
+                break
+        if needs_llm:
+            result.append(path)
+    return result
+
+
+def build_api_request_tool(schema: Dict[str, Any]) -> Dict[str, Any]:
+    """Build an OpenAI function calling tool definition from the OpenAPI schema.
+
+    Extracts all GET and POST endpoints and returns a tool definition that
+    the LLM can use to make API requests on behalf of the user.
+
+    Args:
+        schema: The OpenAPI JSON schema dictionary
+
+    Returns:
+        An OpenAI-format tool definition dict with an extra
+        ``_llm_header_paths`` key listing endpoints that need X-LLM-* headers.
+    """
+    endpoints = []
+    methods_enum = set()
+    paths = schema.get("paths", {}) if schema else {}
+
+    for path, path_item in paths.items():
+        if not isinstance(path_item, dict):
+            continue
+        for method in ("get", "post"):
+            if method not in path_item:
+                continue
+            op = path_item[method]
+            if not isinstance(op, dict):
+                continue
+            summary = op.get("summary", "")
+            desc = f"{method.upper()} {path}"
+            if summary:
+                desc += f" — {summary}"
+            endpoints.append(desc)
+            methods_enum.add(method.upper())
+
+    if not methods_enum:
+        methods_enum = {"GET", "POST"}
+
+    endpoint_list = "\n".join(f"- {e}" for e in endpoints) if endpoints else "No endpoints found."
+
+    llm_paths = _endpoints_needing_llm_headers(schema)
+
+    return {
+        "type": "function",
+        "function": {
+            "name": "api_request",
+            "description": (
+                "Execute an HTTP request against the API. "
+                "Available endpoints:\n" + endpoint_list
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "method": {
+                        "type": "string",
+                        "enum": sorted(methods_enum),
+                        "description": "HTTP method",
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "API endpoint path, e.g. /users/{id}",
+                    },
+                    "query_params": {
+                        "type": "object",
+                        "description": "Query string parameters as key-value pairs",
+                        "additionalProperties": True,
+                    },
+                    "path_params": {
+                        "type": "object",
+                        "description": "Path parameters to substitute in the URL template",
+                        "additionalProperties": True,
+                    },
+                    "body": {
+                        "type": "object",
+                        "description": "JSON request body (for POST requests)",
+                        "additionalProperties": True,
+                    },
+                },
+                "required": ["method", "path"],
+            },
+        },
+        # Private metadata — not sent to the LLM but used by the frontend
+        "_llm_header_paths": llm_paths,
+    }
+
+
 def setup_llm_docs(
     app: FastAPI,
     *,
@@ -342,8 +463,8 @@ def setup_llm_docs(
             headers["Authorization"] = f"Bearer {llm.api_key}"
 
         # Build messages with OpenAPI system context
-        messages: List[Dict[str, str]] = []
-        
+        messages: List[Dict[str, Any]] = []
+
         # Build comprehensive OpenAPI context
         openapi_context = ""
         if body.openapi_schema:
@@ -352,23 +473,44 @@ def setup_llm_docs(
         elif body.openapi_summary:
             # Fall back to summary if schema not provided
             openapi_context = body.openapi_summary
-        
+
+        system_content = ""
         if openapi_context:
-            messages.append({
-                "role": "system",
-                "content": (
-                    "You are a helpful API assistant. The user is looking at an API "
-                    "documentation page for an OpenAPI-compliant REST API. Here is the full "
-                    "OpenAPI schema/context for this API:\n\n"
-                    + openapi_context
-                    + "\n\nUse this schema to answer questions about the API. When appropriate, "
-                    "provide example curl commands or code snippets based on the endpoint definitions. "
-                    "If asked about a specific endpoint, refer to its parameters, request body, "
-                    "and response schemas defined in the OpenAPI spec."
-                ),
-            })
+            system_content = (
+                "You are a helpful API assistant. The user is looking at an API "
+                "documentation page for an OpenAPI-compliant REST API. Here is the full "
+                "OpenAPI schema/context for this API:\n\n"
+                + openapi_context
+                + "\n\nUse this schema to answer questions about the API. When appropriate, "
+                "provide example curl commands or code snippets based on the endpoint definitions. "
+                "If asked about a specific endpoint, refer to its parameters, request body, "
+                "and response schemas defined in the OpenAPI spec."
+            )
+
+        if body.enable_tools:
+            tool_instructions = (
+                "\n\nYou have access to the `api_request` tool to execute API calls. "
+                "When the user asks you to call an endpoint, use the tool instead of "
+                "just showing a curl command. If a tool call returns an error, you may "
+                "retry with corrected parameters (up to 3 times)."
+            )
+            system_content = (system_content or "You are a helpful API assistant.") + tool_instructions
+
+        if system_content:
+            messages.append({"role": "system", "content": system_content})
+
         for msg in body.messages:
-            messages.append({"role": msg.role, "content": msg.content})
+            m: Dict[str, Any] = {"role": msg.role}
+            if msg.content is not None:
+                m["content"] = msg.content
+            if msg.tool_calls is not None:
+                m["tool_calls"] = msg.tool_calls
+            if msg.tool_call_id is not None:
+                m["tool_call_id"] = msg.tool_call_id
+            # tool role messages require content
+            if msg.role == "tool" and msg.content is None:
+                m["content"] = ""
+            messages.append(m)
 
         payload: Dict[str, Any] = {
             "model": llm.model_id,
@@ -377,6 +519,12 @@ def setup_llm_docs(
             "temperature": llm.temperature,
             "stream": True,
         }
+
+        # Inject tool definition when enabled
+        if body.enable_tools and body.openapi_schema:
+            tool_def = build_api_request_tool(body.openapi_schema)
+            payload["tools"] = [tool_def]
+            payload["tool_choice"] = "auto"
 
         async def stream_response():
             try:
