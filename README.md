@@ -2,17 +2,16 @@
 
 > Add an AI assistant to your FastAPI `/docs` page.
 
-This package enhances Swagger UI with an LLM-powered chat assistant and settings panel. Users configure their API credentials directly in the browser to power a client-side AI Assistant that can answer questions about your API, generate example requests, and even execute API calls on your behalf.
-
 ![](examples/example.gif)
+
+This package enhances the Swagger UI with an LLM-powered chat assistant and settings panel. Users configure their API credentials directly in the browser to power a client-side AI Assistant that can answer questions about your API and execute requests using tool calling.
 
 ## Features
 
-- 🤖 LLM Settings panel (collapsible)
-- 🔗 Tool-calling for API Requests
-- 💾 Persistent settings via `localStorage`
-- 🔒 Automatic header injection (`X-LLM-*`)
 - 💬 AI chat assistant with full OpenAPI context
+- 🤖 LLM Settings panel with local and online providers
+- 🔗 Tool-calling for API Requests
+- 🔒 Automatic header injection (`X-LLM-*`)
 - 🎨 Dark/light theme support
 
 ## Installation

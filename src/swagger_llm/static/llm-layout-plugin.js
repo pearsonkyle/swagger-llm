@@ -66,9 +66,20 @@
         };
       };
 
+      // Content area style - full height for chat
+      var contentStyle = {
+        border: "1px solid var(--theme-border-color)",
+        borderTop: "none",
+        borderRadius: "0 0 6px 6px",
+        background: "var(--theme-header-bg)",
+        height: activeTab === "chat" ? "calc(100vh - 120px)" : "auto",
+        minHeight: activeTab === "chat" ? "400px" : "auto",
+        overflow: activeTab === "chat" ? "hidden" : "auto",
+      };
+
       return React.createElement(
         "div",
-        null,
+        { style: { display: "flex", flexDirection: "column", height: "100%" } },
         // Tab navigation bar
         React.createElement(
           "div",
@@ -78,6 +89,7 @@
               border: "1px solid var(--theme-border-color)",
               borderRadius: "6px 6px 0 0",
               background: "var(--theme-header-bg)",
+              flexShrink: 0,
             }
           },
           React.createElement(
@@ -104,17 +116,10 @@
           )
         ),
         
-        // Content area
+        // Content area - use dynamic contentStyle for proper chat height
         React.createElement(
           "div",
-          {
-            style: {
-              border: "1px solid var(--theme-border-color)",
-              borderTop: "none",
-              borderRadius: "0 0 6px 6px",
-              background: "var(--theme-header-bg)",
-            }
-          },
+          { style: contentStyle },
           // API api tab content
           activeTab === "api" ? React.createElement(BaseLayout, props) : null,
           

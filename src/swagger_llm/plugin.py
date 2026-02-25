@@ -40,6 +40,11 @@ class LLMChatRequest(BaseModel):
     enable_tools: bool = False
 
 
+class _LLMHeaderPaths(BaseModel):
+    """Response model for LLM header paths endpoint."""
+    paths: List[str]
+
+
 def get_swagger_ui_html(
     *,
     openapi_url: str,
@@ -576,3 +581,14 @@ def setup_llm_docs(
                 return response.json()
         except httpx.RequestError as exc:
             return {"error": "Request failed", "details": str(exc)}
+
+    # Register endpoint to list paths that require X-LLM-* headers
+    @app.get("/swagger-llm/llm-header-paths", include_in_schema=False)
+    async def get_llm_header_paths():
+        """Return list of endpoint paths that require X-LLM-* headers.
+        
+        Used by the frontend to conditionally inject LLM headers only where needed,
+        making curl examples for other endpoints cleaner and more concise.
+        """
+        schema = app.openapi()
+        return _LLMHeaderPaths(paths=_endpoints_needing_llm_headers(schema))

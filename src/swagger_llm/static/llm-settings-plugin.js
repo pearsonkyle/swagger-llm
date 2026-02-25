@@ -1787,7 +1787,7 @@
 
         return React.createElement(
           "div",
-          { style: styles.chatContainer },
+          { className: "llm-chat-container", style: styles.chatContainer },
           React.createElement(
             "div",
             { id: "llm-chat-messages", style: styles.chatMessages },
@@ -1811,7 +1811,7 @@
           this.state.pendingToolCall && !this.state.isTyping ? this.renderToolCallPanel() : null,
           React.createElement(
             "div",
-            { style: styles.chatInputArea },
+            { className: "llm-chat-input-area", style: styles.chatInputArea },
             React.createElement("textarea", {
               value: this.state.input,
               onChange: this.handleInputChange,
@@ -1897,7 +1897,8 @@
           autoExecute: ts.autoExecute || false,
           toolApiKey: ts.apiKey || '',
         };
-        this.handleSaveSettings = this.handleSaveSettings.bind(this);
+        // Create debounced save function for auto-save
+        this._debouncedSave = debounce(this._saveSettings.bind(this), 300);
         this.handleTestConnection = this.handleTestConnection.bind(this);
         this.toggleOpen = this.toggleOpen.bind(this);
         this.handleProviderChange = this.handleProviderChange.bind(this);
@@ -1907,6 +1908,30 @@
         this.handleMaxTokensChange = this.handleMaxTokensChange.bind(this);
         this.handleTemperatureChange = this.handleTemperatureChange.bind(this);
         this.handleThemeChange = this.handleThemeChange.bind(this);
+      }
+
+      // Internal save method - called by debounced wrapper
+      _saveSettings() {
+        var settings = {
+          baseUrl: this.state.baseUrl,
+          apiKey: this.state.apiKey,
+          modelId: this.state.modelId,
+          maxTokens: this.state.maxTokens !== '' ? this.state.maxTokens : null,
+          temperature: this.state.temperature !== '' ? this.state.temperature : null,
+          provider: this.state.provider,
+        };
+        saveToStorage(settings);
+        saveToolSettings({
+          enableTools: this.state.enableTools,
+          autoExecute: this.state.autoExecute,
+          apiKey: this.state.toolApiKey,
+        });
+        saveTheme({ theme: this.state.theme, customColors: this.state.customColors });
+      }
+
+      // Auto-save method - called by field change handlers
+      _autoSave() {
+        this._debouncedSave();
       }
 
       componentDidMount() {
@@ -2026,37 +2051,44 @@
         var provider = LLM_PROVIDERS[value] || LLM_PROVIDERS.custom;
         this.setState({ provider: value, baseUrl: provider.url, availableModels: [], connectionStatus: "disconnected" });
         dispatchAction(system, 'setProvider', value);
+        this._autoSave();
       }
 
       handleBaseUrlChange(e) {
         this.setState({ baseUrl: e.target.value });
         dispatchAction(system, 'setBaseUrl', e.target.value);
+        this._autoSave();
       }
 
       handleApiKeyChange(e) {
         this.setState({ apiKey: e.target.value });
         dispatchAction(system, 'setApiKey', e.target.value);
+        this._autoSave();
       }
 
       handleModelIdChange(e) {
         this.setState({ modelId: e.target.value });
         dispatchAction(system, 'setModelId', e.target.value);
+        this._autoSave();
       }
 
       handleMaxTokensChange(e) {
         this.setState({ maxTokens: e.target.value });
         dispatchAction(system, 'setMaxTokens', e.target.value);
+        this._autoSave();
       }
 
       handleTemperatureChange(e) {
         this.setState({ temperature: e.target.value });
         dispatchAction(system, 'setTemperature', e.target.value);
+        this._autoSave();
       }
 
       handleThemeChange(e) {
         var value = e.target.value;
         this.setState({ theme: value });
         dispatchAction(system, 'setTheme', value);
+        this._autoSave();
       }
 
       handleColorChange(colorKey, e) {
@@ -2067,6 +2099,25 @@
           return { customColors: newColors };
         });
         dispatchAction(system, 'setCustomColor', { key: colorKey, value: value });
+        this._autoSave();
+      }
+
+      // Handler for enableTools checkbox
+      handleEnableToolsChange(e) {
+        this.setState({ enableTools: e.target.checked });
+        this._autoSave();
+      }
+
+      // Handler for autoExecute checkbox
+      handleAutoExecuteChange(e) {
+        this.setState({ autoExecute: e.target.checked });
+        this._autoSave();
+      }
+
+      // Handler for tool API key input
+      handleToolApiKeyChange(e) {
+        this.setState({ toolApiKey: e.target.value });
+        this._autoSave();
       }
 
       render() {
@@ -2287,7 +2338,7 @@
                 React.createElement("input", {
                   type: "checkbox",
                   checked: s.enableTools,
-                  onChange: function(e) { self.setState({ enableTools: e.target.checked }); },
+                  onChange: this.handleEnableToolsChange,
                   style: checkboxStyle
                 }),
                 "Enable API Tool Calling"
@@ -2305,7 +2356,7 @@
                 React.createElement("input", {
                   type: "checkbox",
                   checked: s.autoExecute,
-                  onChange: function(e) { self.setState({ autoExecute: e.target.checked }); },
+                  onChange: this.handleAutoExecuteChange,
                   style: checkboxStyle,
                   disabled: !s.enableTools
                 }),
@@ -2325,28 +2376,10 @@
                 placeholder: "Bearer token for target API",
                 style: inputStyle,
                 disabled: !s.enableTools,
-                onChange: function(e) { self.setState({ toolApiKey: e.target.value }); }
+                onChange: this.handleToolApiKeyChange
               })
             )
           )
-        );
-
-        var saveButton = React.createElement(
-          "button",
-          {
-            onClick: this.handleSaveSettings,
-            style: {
-              background: "var(--theme-primary)",
-              color: "#fff",
-              border: "none",
-              borderRadius: "4px",
-              padding: "8px 18px",
-              cursor: "pointer",
-              fontSize: "13px",
-              fontWeight: "600",
-            },
-          },
-          "Save Configuration"
         );
 
         var testButton = React.createElement(
@@ -2361,7 +2394,6 @@
               padding: "8px 18px",
               cursor: "pointer",
               fontSize: "13px",
-              marginLeft: "8px",
             },
           },
           "Test Connection"
@@ -2420,7 +2452,6 @@
           React.createElement(
             "div",
             { style: { display: "flex", alignItems: "center" } },
-            saveButton,
             testButton,
             React.createElement("div", { style: { flex: 1 } }),
             statusBadge
@@ -2489,6 +2520,10 @@
     chatInputArea: {
       borderTop: "1px solid var(--theme-border-color)",
       padding: "12px",
+      width: "100%",
+      maxWidth: "100%",
+      boxSizing: "border-box",
+      flexShrink: 0,
     },
     chatInput: {
       width: "100%",
@@ -2496,10 +2531,17 @@
       border: "1px solid var(--theme-border-color)",
       borderRadius: "4px",
       color: "var(--theme-text-primary)",
-      padding: "8px 10px",
+      padding: "10px 12px",
       fontSize: "14px",
-      resize: "none",
+      resize: "vertical",
       fontFamily: "'Inter', sans-serif",
+      minHeight: "44px",
+      maxHeight: "200px",
+      overflowWrap: "break-word",
+      wordWrap: "break-word",
+      overflowX: "hidden",
+      boxSizing: "border-box",
+      lineHeight: "1.5",
     },
     chatControls: {
       display: "flex",
@@ -2590,11 +2632,17 @@
 
   // ── CSS styles for chat bubbles, avatars, and animations (theme-aware) ─────
   var chatStyles = [
+    // Chat container - full width with proper flex layout
+    '.llm-chat-container { display: flex; flex-direction: column; height: 100%; min-height: 0; }',
+    
+    // Chat messages area - flexible height with overflow handling
+    '.llm-chat-messages { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; }',
+
     // Chat message wrapper styles
-    '.llm-chat-message-wrapper { display: flex; width: 100%; margin-bottom: 8px; }',
+    '.llm-chat-message-wrapper { display: flex; width: 100%; margin-bottom: 8px; box-sizing: border-box; }',
 
     // Message bubble styles
-    '.llm-chat-message { padding: 10px 14px; border-radius: 12px; max-width: 85%; position: relative; }',
+    '.llm-chat-message { padding: 10px 14px; border-radius: 12px; max-width: 85%; position: relative; box-sizing: border-box; word-wrap: break-word; overflow-wrap: break-word; }',
     '.llm-chat-message.user { align-self: flex-end; background: var(--theme-primary); color: white; }',
     '.llm-chat-message.assistant { align-self: flex-start; background: var(--theme-secondary); color: var(--theme-text-primary); }',
 
@@ -2604,7 +2652,7 @@
     '.llm-chat-message.assistant .llm-avatar { margin-right: 8px; }',
 
     // Message header (user/assistant label + time)
-    '.llm-chat-message-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; font-size: 11px; opacity: 0.9; }',
+    '.llm-chat-message-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; font-size: 11px; opacity: 0.9; flex-shrink: 0; }',
     '.llm-user-label { font-weight: 600; color: var(--theme-text-primary); }',
     '.llm-assistant-label { font-weight: 600; color: #8b5cf6; }',
     '.llm-chat-message-time { opacity: 0.7; font-size: 10px; }',
@@ -2614,7 +2662,7 @@
     '.llm-copy-btn:hover { background: var(--theme-accent); color: white; transform: scale(1.1); }',
 
     // Chat message text
-    '.llm-chat-message-text { font-size: 15px; line-height: 1.6; word-wrap: break-word; }',
+    '.llm-chat-message-text { font-size: 15px; line-height: 1.6; word-wrap: break-word; overflow-wrap: break-word; }',
     '.llm-chat-message-text p { margin: 8px 0; }',
     '.llm-chat-message-text p:first-child { margin-top: 4px; }',
     '.llm-chat-message-text p:last-child { margin-bottom: 4px; }',
@@ -2633,7 +2681,7 @@
     '.llm-chat-message-text a:hover { text-decoration: underline; }',
 
     // Code blocks in messages
-    '.llm-chat-message-text pre { background: var(--theme-input-bg); border-radius: 8px; padding: 12px; overflow-x: auto; margin: 10px 0; font-family: "Consolas", "Monaco", monospace; font-size: 14px; position: relative; }',
+    '.llm-chat-message-text pre { background: var(--theme-input-bg); border-radius: 8px; padding: 12px; overflow-x: auto; margin: 10px 0; font-family: "Consolas", "Monaco", monospace; font-size: 14px; position: relative; max-width: 100%; box-sizing: border-box; word-break: break-all; }',
     '.llm-chat-message-text code { font-family: "Consolas", "Monaco", monospace; background: rgba(0,0,0,0.15); padding: 2px 6px; border-radius: 4px; font-size: 13px; }',
     '.llm-chat-message-text pre code { background: transparent; padding: 0; }',
 
@@ -2657,19 +2705,39 @@
     '.llm-typing-dot:nth-child(1) { animation-delay: -0.32s; }',
     '.llm-typing-dot:nth-child(2) { animation-delay: -0.16s; }',
 
-    // Mobile responsive styles
-    '@media (max-width: 768px) {',
-    '  .llm-chat-message-wrapper { width: 100%; padding: 0 8px; }',
-    '  .llm-chat-message { max-width: 92%; padding: 10px 12px; }',
-    '  .llm-avatar { width: 28px; height: 28px; font-size: 16px; }',
-    '  .llm-chat-message-text { font-size: 15px; }',
-    '  .llm-typing-indicator { font-size: 14px; padding: 10px 14px; }',
+    // Chat input area - full width
+    '.llm-chat-input-area { width: 100%; box-sizing: border-box; flex-shrink: 0; }',
+    
+    // Chat input - proper text handling
+    '.llm-chat-input-area textarea { width: 100%; box-sizing: border-box; overflow-x: hidden; word-wrap: break-word; }',
+
+    // Tablet responsive (768px - 1024px)
+    '@media (min-width: 769px) and (max-width: 1024px) {',
+    '  .llm-chat-message { max-width: 80%; }',
+    '  .llm-chat-messages { padding: 10px; }',
     '}',
 
-    // Chat container responsive
+    // Large desktop (above 1200px)
+    '@media (min-width: 1200px) {',
+    '  .llm-chat-container { max-width: 100%; }',
+    '  .llm-chat-message { max-width: 75%; }',
+    '}',
+
+    // Mobile responsive styles (up to 768px)
     '@media (max-width: 768px) {',
-    '  .llm-chat-container { height: calc(100vh - 80px) !important; }',
-    '  .llm-chat-messages { padding: 8px; gap: 10px; }',
+    '  .llm-chat-message-wrapper { width: 100%; padding: 0 4px; margin-bottom: 6px; }',
+    '  .llm-chat-message { max-width: 90%; padding: 8px 10px; }',
+    '  .llm-avatar { width: 26px; height: 26px; font-size: 14px; margin-right: 6px; }',
+    '  .llm-chat-message-text { font-size: 14px; }',
+    '  .llm-typing-indicator { font-size: 13px; padding: 8px 12px; }',
+    '  .llm-chat-messages { padding: 6px; gap: 6px; }',
+    '  .llm-chat-message-header { font-size: 10px; }',
+    '  .llm-chat-message-text pre { font-size: 12px; padding: 8px; }',
+    '}',
+
+    // Mobile landscape - adjust height for browser chrome
+    '@media (max-width: 768px) and (orientation: landscape) {',
+    '  .llm-chat-container { height: calc(100dvh - 40px) !important; }',
     '}',
 
     // Error message styles

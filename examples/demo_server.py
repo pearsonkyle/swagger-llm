@@ -26,10 +26,19 @@ app = FastAPI(
     description="""
 A demonstration of the swagger-llm-plugin package with LLM-enhanced API documentation.
 
-Features:
+## Features
 - Provider presets for OpenAI, Anthropic, Ollama, LM Studio, vLLM
-- Interactive chat panel
-- Tool calling
+- Interactive chat panel with SSE streaming
+- Tool calling with agentic retry loop
+
+## LLM Header Behavior
+Endpoints that proxy to an LLM provider (like `/models`, `/chat/completions`, `/embeddings`)
+automatically receive X-LLM-* headers from the Swagger UI LLM settings panel.
+
+Endpoints that don't require LLM configuration (like `/health`, `/info`) will NOT receive
+these headers, making their curl examples cleaner and more concise.
+
+Configure your LLM provider settings in the "Settings" tab.
 """,
 )
 
@@ -76,13 +85,21 @@ def build_headers(llm: LLMConfig) -> Dict[str, str]:
 
 @app.get("/health", tags=["utility"])
 async def health():
-    """Returns the health status of the service."""
+    """Health check endpoint - does not require LLM settings.
+    
+    Returns the health status of the service. This endpoint is used for
+    basic uptime monitoring and does not interact with any LLM provider.
+    """
     return {"status": "ok"}
 
 
 @app.get("/info", tags=["utility"])
 async def info():
-    """Returns information about this demo server."""
+    """Info endpoint - does not require LLM settings.
+    
+    Returns information about this demo server, including package version
+    and available features. No LLM configuration is needed.
+    """
     return {
         "package_version": "0.3.0",
         "features": [
@@ -99,10 +116,11 @@ async def info():
 
 @app.get("/models", tags=["models"])
 async def list_models(llm: LLMConfig = Depends(get_llm_config)):
-    """Proxy the /models endpoint of the configured LLM API.
-
-    This endpoint retrieves available models from your configured LLM provider.
-    The request headers are automatically injected by the Swagger UI LLM panel.
+    """List available models from the configured LLM provider.
+    
+    Requires LLM settings (base URL, API key, model ID) to be configured
+    in the Swagger UI LLM settings panel. These are automatically injected
+    as X-LLM-* headers.
     """
     url = build_llm_url(llm.base_url, "/models")
     headers = build_headers(llm)
@@ -123,10 +141,10 @@ async def chat_completions(
     body: ChatRequest,
     llm: LLMConfig = Depends(get_llm_config),
 ):
-    """Proxy a chat completion request to the configured LLM API.
-
-    LLM settings (base URL, API key, model, etc.) are injected automatically
-    from the X-LLM-* headers set by the Swagger UI LLM settings panel.
+    """Proxy a chat completion request to the configured LLM provider.
+    
+    Requires LLM settings to be configured in the Swagger UI LLM settings panel.
+    These are automatically injected as X-LLM-* headers on requests to this endpoint.
 
     Example request body:
     ```json
@@ -159,67 +177,16 @@ async def chat_completions(
                 status_code=502,
             )
 
-
-@app.post("/chat/completions/stream", tags=["chat"])
-async def chat_completions_stream(
-    body: ChatRequest,
-    llm: LLMConfig = Depends(get_llm_config),
-):
-    """Proxy a streaming chat completion request to the configured LLM API.
-
-    This endpoint streams responses as Server-Sent Events (SSE).
-    """
-    url = build_llm_url(llm.base_url, "/chat/completions")
-    headers = build_headers(llm)
-
-    payload: Dict[str, Any] = {
-        "model": body.model or llm.model_id,
-        "messages": [m.model_dump() for m in body.messages],
-        "temperature": body.temperature if body.temperature is not None else llm.temperature,
-    }
-
-    if body.max_tokens:
-        payload["max_tokens"] = body.max_tokens
-
-    if not payload.get("stream"):
-        payload["stream"] = True
-
-    async def stream_response():
-        try:
-            async with httpx.AsyncClient(timeout=60) as client:
-                async with client.stream("POST", url, headers=headers, json=payload) as response:
-                    if response.status_code != 200:
-                        error_text = await response.aread()
-                        yield f"data: {{'error': 'HTTP {response.status_code}', 'details': '{error_text.decode()}'}}\n\n"
-                        return
-
-                    async for line in response.aiter_lines():
-                        if not line:
-                            continue
-                        if line.startswith("data: "):
-                            data = line[6:]
-                            if data == "[DONE]":
-                                yield "data: [DONE]\n\n"
-                            else:
-                                try:
-                                    import json
-                                    chunk = json.loads(data)
-                                    yield f"data: {json.dumps(chunk)}\n\n"
-                                except json.JSONDecodeError:
-                                    yield f"data: {data}\n\n"
-        except httpx.RequestError as exc:
-            yield f"data: {{'error': 'Request failed', 'details': '{str(exc)}'}}\n\n"
-
-    from fastapi.responses import StreamingResponse
-    return StreamingResponse(stream_response(), media_type="text/event-stream")
-
-
 @app.post("/embeddings", tags=["embeddings"])
 async def create_embeddings(
     body: Dict[str, Any],
     llm: LLMConfig = Depends(get_llm_config),
 ):
-    """Proxy an embeddings request to the configured LLM API."""
+    """Create embeddings using the configured LLM provider.
+    
+    Requires LLM settings to be configured in the Swagger UI LLM settings panel.
+    These are automatically injected as X-LLM-* headers on requests to this endpoint.
+    """
     url = build_llm_url(llm.base_url, "/embeddings")
     headers = build_headers(llm)
 
