@@ -7,7 +7,6 @@
   // ── LLM Provider configurations ─────────────────────────────────────────────
   var LLM_PROVIDERS = {
     openai: { name: 'OpenAI', url: 'https://api.openai.com/v1' },
-    anthropic: { name: 'Anthropic', url: 'https://api.anthropic.com/v1' },
     ollama: { name: 'Ollama', url: 'http://localhost:11434/v1' },
     lmstudio: { name: 'LM Studio', url: 'http://localhost:1234/v1' },
     vllm: { name: 'vLLM', url: 'http://localhost:8000/v1' },
@@ -1729,6 +1728,8 @@
           connectionStatus: "disconnected",
           settingsOpen: false,
           lastError: "",
+          // Available models from connection test
+          availableModels: [],
           // Tool calling settings
           enableTools: ts.enableTools || false,
           autoExecute: ts.autoExecute || false,
@@ -1828,7 +1829,21 @@
             if (data && data.error) {
               throw new Error(data.details || data.error);
             }
-            self.setState({ connectionStatus: "connected" });
+            // Extract model IDs from response
+            var models = [];
+            if (data && Array.isArray(data.data)) {
+              models = data.data
+                .map(function(m) { return m.id || m.name || ''; })
+                .filter(function(id) { return id !== ''; })
+                .sort();
+            }
+            var newState = { connectionStatus: "connected", availableModels: models };
+            // Auto-select first model if current modelId is not in the list
+            if (models.length > 0 && models.indexOf(self.state.modelId) === -1) {
+              newState.modelId = models[0];
+              dispatchAction(system, 'setModelId', models[0]);
+            }
+            self.setState(newState);
             dispatchAction(system, 'setConnectionStatus', "connected");
           })
           .catch(function (err) {
@@ -1847,7 +1862,7 @@
       handleProviderChange(e) {
         var value = e.target.value;
         var provider = LLM_PROVIDERS[value] || LLM_PROVIDERS.custom;
-        this.setState({ provider: value, baseUrl: provider.url });
+        this.setState({ provider: value, baseUrl: provider.url, availableModels: [], connectionStatus: "disconnected" });
         dispatchAction(system, 'setProvider', value);
       }
 
@@ -1952,21 +1967,12 @@
           "div",
           { style: fieldStyle },
           React.createElement("label", { style: labelStyle }, "Base URL"),
-          React.createElement(
-            "div",
-            { style: { display: "flex", alignItems: "center" } },
-            React.createElement("input", {
-              type: "text",
-              value: s.baseUrl,
-              style: Object.assign({}, inputStyle, { flex: 1 }),
-              onChange: this.handleBaseUrlChange,
-            }),
-            provider.name !== 'Custom' && React.createElement(
-              "span",
-              { style: { marginLeft: "8px", fontSize: "10px", color: "var(--theme-text-secondary)" } },
-              provider.url
-            )
-          )
+          React.createElement("input", {
+            type: "text",
+            value: s.baseUrl,
+            style: inputStyle,
+            onChange: this.handleBaseUrlChange,
+          })
         );
 
         var fields = React.createElement(
@@ -1990,12 +1996,24 @@
             "div",
             { style: fieldStyle },
             React.createElement("label", { style: labelStyle }, "Model ID"),
-            React.createElement("input", {
-              type: "text",
-              value: s.modelId,
-              style: inputStyle,
-              onChange: this.handleModelIdChange,
-            })
+            s.availableModels.length > 0
+              ? React.createElement(
+                  "select",
+                  {
+                    value: s.modelId,
+                    style: inputStyle,
+                    onChange: this.handleModelIdChange,
+                  },
+                  s.availableModels.map(function (model) {
+                    return React.createElement("option", { key: model, value: model }, model);
+                  })
+                )
+              : React.createElement("input", {
+                  type: "text",
+                  value: s.modelId,
+                  style: inputStyle,
+                  onChange: this.handleModelIdChange,
+                })
           ),
           React.createElement(
             "div",

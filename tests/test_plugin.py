@@ -389,14 +389,13 @@ def test_provider_preset_ollama():
     assert "localhost:11434/v1" in js_content
 
 
-def test_provider_preset_anthropic():
-    """Test Anthropic provider preset."""
+def test_provider_preset_anthropic_removed():
+    """Test Anthropic provider preset has been removed (only OpenAI-compatible APIs supported)."""
     client = TestClient(make_app())
     js_content = client.get("/swagger-llm-static/llm-settings-plugin.js").text
-    
-    # Check Anthropic preset
-    assert "anthropic" in js_content.lower()
-    assert "api.anthropic.com/v1" in js_content
+
+    # Anthropic should no longer be a provider preset
+    assert "api.anthropic.com/v1" not in js_content
 
 
 def test_provider_preset_vllm():
