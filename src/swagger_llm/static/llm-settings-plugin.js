@@ -1695,6 +1695,24 @@
           idx === chatHistory.length - 1 &&
           msg.role === 'assistant';
 
+        // Helper to build clean message header (no avatar)
+        var renderMessageHeader = function(label, showTimestamp) {
+          return React.createElement(
+            "div",
+            { className: "llm-chat-message-header" },
+            React.createElement("span", { 
+              style: { 
+                fontSize: "13px", 
+                fontWeight: "600", 
+                color: isToolCallMsg ? "#8b5cf6" : (isTool ? "var(--theme-text-primary)" : undefined)
+              } 
+            }, label),
+            showTimestamp && self.state.copiedId === msg.messageId
+              ? React.createElement("span", { style: { fontSize: "11px", color: "#10b981", fontWeight: "500" } }, "✓ Copied")
+              : null
+          );
+        };
+
         if (isToolCallMsg) {
           var toolArgs = msg._toolArgs || {};
           var tcMethod = toolArgs.method || 'GET';
@@ -1715,27 +1733,35 @@
                 className: "llm-chat-message assistant",
                 style: { maxWidth: "90%", borderLeft: "3px solid #8b5cf6" }
               },
-              React.createElement("div", { className: "llm-avatar assistant-avatar" }, "🤖"),
               React.createElement(
                 "div",
                 { style: { flex: 1, minWidth: 0 } },
                 React.createElement(
                   "div",
                   { style: { display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px" } },
-                  React.createElement("span", { style: { fontSize: "13px", fontWeight: "600", color: "#8b5cf6" } }, "api_request"),
+                  React.createElement("span", { 
+                    style: { 
+                      fontSize: "12px", 
+                      fontWeight: "600", 
+                      color: "#8b5cf6",
+                      background: "rgba(139, 92, 246, 0.1)",
+                      padding: "2px 8px",
+                      borderRadius: "4px"
+                    } 
+                  }, "api_request"),
                   React.createElement("span", {
                     style: {
                       background: tcMethod === 'POST' ? '#f59e0b' : '#10b981',
                       color: '#fff',
                       padding: '1px 6px',
                       borderRadius: '3px',
-                      fontSize: '11px',
+                      fontSize: '10px',
                       fontWeight: '600',
                       fontFamily: "'Consolas', 'Monaco', monospace",
                     }
                   }, tcMethod),
                   React.createElement("span", {
-                    style: { fontSize: "13px", fontFamily: "'Consolas', 'Monaco', monospace", color: "var(--theme-text-primary)" }
+                    style: { fontSize: "12px", fontFamily: "'Consolas', 'Monaco', monospace", color: "var(--theme-text-primary)" }
                   }, tcPath)
                 ),
                 // Curl code block - click-to-copy with CodeBlock component
@@ -1780,7 +1806,6 @@
                 onClick: function() { self.handleBubbleClick(msg.messageId, responseBody); },
                 style: { maxWidth: "90%", borderLeft: "3px solid " + statusColor, cursor: "pointer" }
               },
-              React.createElement("div", { className: "llm-avatar assistant-avatar", style: { background: "linear-gradient(135deg, " + statusColor + ", #059669)" } }, "📡"),
               React.createElement(
                 "div",
                 { style: { flex: 1, minWidth: 0 } },
@@ -1816,21 +1841,12 @@
               onClick: function() { self.handleBubbleClick(msg.messageId, msg.content); },
               style: { maxWidth: isUser ? "85%" : "90%", cursor: "pointer" }
             },
-            !isUser && React.createElement("div", {
-              className: "llm-avatar assistant-avatar",
-              title: "AI Assistant"
-            }, "🤖"),
             React.createElement(
               "div",
               { className: "llm-chat-message-header" },
               isUser
-                ? React.createElement("span", { className: "llm-user-label" }, "You")
-                : React.createElement("div", { style: { display: "flex", alignItems: "center", gap: "6px" } },
-                    React.createElement("span", { className: "llm-assistant-label" }, "Assistant"),
-                    React.createElement("span", { className: "llm-chat-message-time" },
-                      (msg.messageId || msg.timestamp) ? new Date(parseInt((msg.messageId || "").split('_')[0] || msg.timestamp)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''
-                    )
-                  ),
+                ? null
+                : React.createElement("span", { className: "llm-assistant-label" }, "Assistant"),
               self.state.copiedId === msg.messageId
                 ? React.createElement("span", { style: { fontSize: "11px", color: "#10b981", fontWeight: "500" } }, "✓ Copied")
                 : null
@@ -1893,18 +1909,15 @@
           boxSizing: "border-box",
         };
         var labelStyle = { color: "var(--theme-text-secondary)", fontSize: "11px", marginBottom: "2px" };
-        var headerStyle = { color: "var(--theme-text-primary)", fontSize: "13px", fontWeight: "600", marginBottom: "6px", display: "flex", alignItems: "center", gap: "6px", justifyContent: "space-between" };
+        var headerStyle = { color: "var(--theme-text-primary)", fontSize: "13px", fontWeight: "600", marginBottom: "6px" };
 
         return React.createElement(
           "div",
           { style: panelStyle },
           React.createElement("div", { style: headerStyle },
-            React.createElement("div", { style: { display: "flex", alignItems: "center", gap: "6px" } },
-              "🤖 ",
-              React.createElement("span", null, "api_request"),
-              React.createElement("span", { style: { color: "var(--theme-text-secondary)", fontWeight: "400", fontSize: "12px" } },
-                s.editMethod + " " + s.editPath
-              )
+            React.createElement("span", null, "api_request"),
+            React.createElement("span", { style: { color: "var(--theme-text-secondary)", fontWeight: "400", fontSize: "12px" } },
+              s.editMethod + " " + s.editPath
             )
           ),
           React.createElement("div", { style: { display: "flex", gap: "6px", marginBottom: "8px", alignItems: "flex-end" } },
@@ -2637,13 +2650,9 @@
     '.llm-chat-message.user { align-self: flex-end; background: var(--theme-primary); color: white; }',
     '.llm-chat-message.assistant { align-self: flex-start; background: var(--theme-secondary); color: var(--theme-text-primary); }',
 
-    '.llm-avatar { width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 18px; margin-right: 8px; flex-shrink: 0; }',
-    '.assistant-avatar { background: linear-gradient(135deg, #6366f1, #8b5cf6); }',
+    '.llm-assistant-label { font-weight: 600; color: #8b5cf6; }',
 
     '.llm-chat-message-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; font-size: 11px; opacity: 0.9; flex-shrink: 0; }',
-    '.llm-user-label { font-weight: 600; color: var(--theme-text-primary); }',
-    '.llm-assistant-label { font-weight: 600; color: #8b5cf6; }',
-    '.llm-chat-message-time { opacity: 0.7; font-size: 10px; }',
 
     '.llm-chat-message-text { font-size: 15px; line-height: 1.6; word-wrap: break-word; overflow-wrap: break-word; }',
     '.llm-chat-message-text p { margin: 8px 0; }',
@@ -2692,7 +2701,6 @@
     '@media (max-width: 768px) {',
     '  .llm-chat-message-wrapper { width: 100%; padding: 0 4px; margin-bottom: 6px; }',
     '  .llm-chat-message { max-width: 90%; padding: 8px 10px; }',
-    '  .llm-avatar { width: 26px; height: 26px; font-size: 14px; margin-right: 6px; }',
     '  .llm-chat-message-text { font-size: 14px; }',
     '  .llm-typing-indicator { font-size: 13px; padding: 8px 12px; }',
     '  .llm-chat-messages { padding: 6px; gap: 6px; }',
