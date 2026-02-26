@@ -33,7 +33,10 @@
         return function() {
           window.removeEventListener('storage', handleStorageChange);
         };
-      }, [activeTab]);
+      }, []);
+
+      // Expose direct tab-switch function for same-page use
+      window.llmSwitchTab = function(tab) { setActiveTab(tab); };
 
       // Persist tab preference to localStorage
       React.useEffect(function () {

@@ -29,7 +29,7 @@
       console.error('Failed to load system-prompt-config.json:', e);
     }
     
-    // Return default if config fails to load
+    // Return default synchronously — the XHR is async so config loads on subsequent calls (intentional lazy-load)
     return {
       presets: {},
       defaultPreset: 'api_assistant'
@@ -234,16 +234,14 @@
 
   // ── Build curl command from tool call arguments ───────────────────────────
   function buildCurlCommand(method, path, queryParams, pathParams, body) {
-    var cmd = 'curl -X ' + method.toUpperCase() + ' "' + path + '"';
-    
-    // Add query params to URL if present
+    var url = path;
     if (queryParams && Object.keys(queryParams).length > 0) {
-      var queryKeys = Object.keys(queryParams);
-      var qs = queryKeys.map(function(k) {
+      var qs = Object.keys(queryParams).map(function(k) {
         return encodeURIComponent(k) + '=' + encodeURIComponent(queryParams[k]);
       }).join('&');
-      cmd = 'curl -X ' + method.toUpperCase() + ' "' + path + '?' + qs + '"';
+      url += '?' + qs;
     }
+    var cmd = 'curl -X ' + method.toUpperCase() + ' "' + url + '"';
     
     // Add headers
     cmd += ' \\\n  -H "Content-Type: application/json"';
@@ -266,16 +264,16 @@
   // ── Build API request tool definition for LLM tool calling ─────────────────
   function buildApiRequestTool(schema) {
     var endpoints = [];
-    var methodsEnum = new Set();
+    var methodsEnum = new Set(['GET', 'POST']);
     var paths = schema.paths || {};
-    
+
     Object.keys(paths).forEach(function(path) {
       var pathItem = paths[path];
       if (typeof pathItem !== 'object') return;
-      
+
       ['get', 'post'].forEach(function(method) {
         if (!pathItem[method] || typeof pathItem[method] !== 'object') return;
-        
+
         var op = pathItem[method];
         var summary = op.summary || '';
         var desc = method.toUpperCase() + ' ' + path;
@@ -283,13 +281,8 @@
           desc += ' — ' + summary;
         }
         endpoints.push(desc);
-        methodsEnum.add(method.toUpperCase());
       });
     });
-    
-    if (methodsEnum.size === 0) {
-      methodsEnum = new Set(['GET', 'POST']);
-    }
     
     var endpointList = endpoints.length > 0 
       ? '\n' + endpoints.map(function(e) { return '- ' + e; }).join('\n')
@@ -528,8 +521,6 @@
   var SET_OPENAPI_SCHEMA = "LLM_SET_OPENAPI_SCHEMA";
   var SET_THEME = "LLM_SET_THEME";
   var SET_CUSTOM_COLOR = "LLM_SET_CUSTOM_COLOR";
-  var SET_SYSTEM_PROMPT_PRESET = "LLM_SET_SYSTEM_PROMPT_PRESET";
-  var SET_CUSTOM_SYSTEM_PROMPT = "LLM_SET_CUSTOM_SYSTEM_PROMPT";
 
   // ── Default state ───────────────────────────────────────────────────────────
   var storedSettings = loadFromStorage();
@@ -691,22 +682,73 @@
     error: "🔴",
   };
 
-  // ── Provider badge generator ───────────────────────────────────────────────
-  function getProviderBadge(providerKey) {
-    var provider = LLM_PROVIDERS[providerKey] || LLM_PROVIDERS.custom;
-    var className = 'llm-provider-' + providerKey;
-    return React.createElement(
-      "span",
-      { className: "llm-provider-badge " + className },
-      provider.name
-    );
-  }
-
   // ── Message ID counter for unique timestamps ─
   var _messageIdCounter = 0;
 
   function generateMessageId() {
     return Date.now() + '_' + (++_messageIdCounter);
+  }
+
+  // ── Consistent copy utility function (always returns a Promise) ────────────
+  function copyToClipboard(text) {
+    return new Promise(function(resolve, reject) {
+      // Validate input
+      if (!text || typeof text !== 'string') {
+        console.warn('copyToClipboard: invalid or empty text');
+        resolve(false);
+        return;
+      }
+
+      // Modern clipboard API
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text)
+          .then(function() {
+            resolve(true);
+          })
+          .catch(function(err) {
+            console.error('Clipboard API failed:', err);
+            // Fall through to fallback
+            runFallbackCopy(text, resolve);
+          });
+        return;
+      }
+
+      // Fallback for older browsers without clipboard API
+      runFallbackCopy(text, resolve);
+    });
+
+    // Helper function for fallback copy using execCommand
+    function runFallbackCopy(text, resolve) {
+      try {
+        var textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        textarea.style.pointerEvents = 'none';
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+
+        try {
+          var success = document.execCommand('copy');
+          document.body.removeChild(textarea);
+          
+          if (success) {
+            resolve(true);
+          } else {
+            console.warn('execCommand copy failed');
+            resolve(false);
+          }
+        } catch (cmdErr) {
+          console.error('execCommand error:', cmdErr);
+          document.body.removeChild(textarea);
+          resolve(false);
+        }
+      } catch (fallbackErr) {
+        console.error('Fallback copy also failed:', fallbackErr);
+        resolve(false);
+      }
+    }
   }
 
     // ── System Prompt Preset Selector Component (for Settings panel) ───────────
@@ -789,6 +831,172 @@
       );
     };
   }
+
+  // ── CodeBlock Component - Click-to-copy for code blocks ───────────────────
+  function createCodeBlock(React) {
+    return class CodeBlock extends React.Component {
+      constructor(props) {
+        super(props);
+        this.state = { 
+          copied: false,
+          isHovering: false
+        };
+        this.handleCopy = this.handleCopy.bind(this);
+        this.handleMouseEnter = this.handleMouseEnter.bind(this);
+        this.handleMouseLeave = this.handleMouseLeave.bind(this);
+        this.handleClick = this.handleClick.bind(this);
+      }
+
+      handleCopy() {
+        const { text, messageId } = this.props;
+        if (!text) return;
+
+        copyToClipboard(text).then(function(copied) {
+          if (copied) {
+            this.setState({ copied: true });
+            setTimeout(() => {
+              this.setState({ copied: false });
+            }, 2000);
+          }
+        }.bind(this)).catch(function(err) {
+          console.error('Failed to copy:', err);
+        });
+      }
+
+      handleMouseEnter() {
+        this.setState({ isHovering: true });
+      }
+
+      handleMouseLeave() {
+        this.setState({ isHovering: false });
+      }
+
+      handleClick(e) {
+        // Prevent propagation to avoid issues with parent elements
+        e.stopPropagation();
+        this.handleCopy();
+      }
+
+      // Add touch support for mobile devices
+      handleTouchStart(e) {
+        e.preventDefault(); // Prevent ghost click
+        this.handleClick(e);
+      }
+
+      render() {
+        const { text, language = 'text', messageId } = this.props;
+        const { copied, isHovering } = this.state;
+
+        return React.createElement(
+          "div",
+          {
+            className: "llm-code-block-wrapper",
+            style: {
+              background: "var(--theme-input-bg)",
+              border: "1px solid var(--theme-border-color)",
+              borderRadius: "8px",
+              overflow: "hidden",
+              margin: "10px 0",
+              fontFamily: "'Consolas', 'Monaco', monospace",
+              fontSize: "13px",
+            },
+          },
+          // Clickable header area
+          React.createElement(
+            "div",
+            {
+              style: {
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                padding: "8px 12px",
+                background: isHovering || copied ? "var(--theme-primary)" : "var(--theme-panel-bg)",
+                borderBottom: "1px solid var(--theme-border-color)",
+                cursor: "pointer",
+                transition: "all 0.2s ease",
+              },
+              onClick: this.handleClick,
+              onMouseEnter: this.handleMouseEnter,
+              onMouseLeave: this.handleMouseLeave,
+              onTouchStart: this.handleTouchStart.bind(this),
+            },
+            React.createElement(
+              "span",
+              {
+                style: {
+                  color: copied ? "#f0fdf4" : "var(--theme-text-secondary)",
+                  fontSize: "10px",
+                  fontFamily: "'Inter', sans-serif",
+                  fontWeight: "600",
+                  textTransform: "uppercase",
+                }
+              },
+              language
+            ),
+            React.createElement(
+              "span",
+              {
+                style: {
+                  color: copied ? "#4ade80" : (isHovering || copied ? "#fff" : "var(--theme-text-secondary)"),
+                  fontSize: "12px",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  transition: "all 0.2s ease",
+                }
+              },
+              copied && React.createElement("span", null, "✓ "),
+              copied ? "Copied!" : (isHovering ? "Click to copy" : "")
+            )
+          ),
+          // Code content area - also clickable
+          React.createElement(
+            "div",
+            {
+              style: {
+                padding: "0",
+                margin: 0,
+                overflowX: "auto",
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-all",
+                cursor: "pointer",
+              },
+              onClick: this.handleClick,
+              onTouchStart: this.handleTouchStart.bind(this),
+            },
+            React.createElement(
+              "pre",
+              {
+                style: {
+                  padding: "14px 12px",
+                  margin: 0,
+                  overflowX: "auto",
+                  whiteSpace: "pre-wrap",
+                  wordBreak: "break-all",
+                  color: language === 'json' ? "#a5b4fc" : "var(--theme-text-primary)",
+                  lineHeight: "1.6",
+                }
+              },
+              React.createElement("code", null, text)
+            )
+          )
+        );
+      }
+    };
+  }
+
+  // ── Helper: map chat history to API message format ──────────────────────────
+  function buildApiMessages(history) {
+    return history.map(function(m) {
+      var msg = { role: m.role };
+      if (m.content != null) msg.content = m.content;
+      if (m.tool_calls) msg.tool_calls = m.tool_calls;
+      if (m.tool_call_id) msg.tool_call_id = m.tool_call_id;
+      if (!m.tool_calls && msg.content == null) msg.content = m._displayContent || '';
+      return msg;
+    });
+  }
+
   // ── Chat panel component ───────────────────────────────────────────────────
   function ChatPanelFactory(system) {
     var React = system.React;
@@ -802,8 +1010,7 @@
           isProcessingToolCall: false,
           chatHistory: loadChatHistory(),
           schemaLoading: false,
-          copiedMessageId: null,
-          headerHover: {},
+          copiedId: null,
           pendingToolCall: null,
           editMethod: 'GET',
           editPath: '',
@@ -821,10 +1028,9 @@
         this.handleKeyDown = this.handleKeyDown.bind(this);
         this.handleCancel = this.handleCancel.bind(this);
         this.clearHistory = this.clearHistory.bind(this);
-        this.copyToClipboard = this.copyToClipboard.bind(this);
+        this.handleBubbleClick = this.handleBubbleClick.bind(this);
         this.renderTypingIndicator = this.renderTypingIndicator.bind(this);
         this.formatMessageContent = this.formatMessageContent.bind(this);
-        this.setHeaderHover = this.setHeaderHover.bind(this);
         this.renderMessage = this.renderMessage.bind(this);
         this.handleExecuteToolCall = this.handleExecuteToolCall.bind(this);
         this.sendToolResult = this.sendToolResult.bind(this);
@@ -864,7 +1070,6 @@
         fetch("/openapi.json", { signal: self._fetchAbortController.signal })
           .then(function (res) { return res.json(); })
           .then(function (schema) {
-            self._openapiSchema = schema;
             dispatchAction(system, 'setOpenApiSchema', schema);
             
             try {
@@ -1039,14 +1244,7 @@
         var currentHistory = (self.state.chatHistory || []).slice();
         currentHistory.push(toolResultMsg);
 
-        var apiMessages = currentHistory.map(function(m) {
-          var msg = { role: m.role };
-          if (m.content != null) msg.content = m.content;
-          if (m.tool_calls) msg.tool_calls = m.tool_calls;
-          if (m.tool_call_id) msg.tool_call_id = m.tool_call_id;
-          if (!m.tool_calls && msg.content == null) msg.content = m._displayContent || '';
-          return msg;
-        });
+        var apiMessages = buildApiMessages(currentHistory);
 
         self.addMessage(toolResultMsg);
 
@@ -1153,23 +1351,6 @@
           return {
             title: "Server Error",
             message: "The LLM provider's server encountered an error. This is usually a temporary issue.",
-            action: null,
-            needsSettings: false
-          };
-        }
-        
-        // Check for CORS errors based on network fetch behavior, not string matching
-        // Only flag as CORS if we get a network-level failure with no response
-        var isNetworkError = errorMsg.toLowerCase().includes('network error') || 
-                             errorMsg.toLowerCase().includes('failed to fetch') ||
-                             (errorMsg && !responseText);
-        
-        // True CORS errors typically show "Failed to fetch" or "NetworkError" 
-        // with status 0 and no response
-        if (responseObj && responseObj.status === 0 && isNetworkError) {
-          return {
-            title: "CORS Error",
-            message: "Cross-origin request blocked. This is usually a configuration issue with the LLM provider.\n\nEnsure your LLM server has CORS enabled. For Ollama, LM Studio, or vLLM, this is typically enabled by default.",
             action: null,
             needsSettings: false
           };
@@ -1454,14 +1635,7 @@
 
         var userMsg = { role: 'user', content: userInput, messageId: msgId };
         var currentHistory = self.state.chatHistory || [];
-        var apiMessages = currentHistory.concat([userMsg]).map(function (m) {
-          var msg = { role: m.role };
-          if (m.content != null) msg.content = m.content;
-          if (m.tool_calls) msg.tool_calls = m.tool_calls;
-          if (m.tool_call_id) msg.tool_call_id = m.tool_call_id;
-          if (!m.tool_calls && msg.content == null) msg.content = m._displayContent || '';
-          return msg;
-        });
+        var apiMessages = buildApiMessages(currentHistory.concat([userMsg]));
 
         self.addMessage(userMsg);
 
@@ -1474,27 +1648,19 @@
         self._streamLLMResponse(apiMessages, streamMsgId, fullSchema);
       }
 
-      setHeaderHover(timestamp, show) {
-        var newHover = Object.assign({}, this.state.headerHover);
-        if (show) {
-          newHover[timestamp] = true;
-        } else {
-          delete newHover[timestamp];
-        }
-        this.setState({ headerHover: newHover });
-      }
-
-      copyToClipboard(text, messageId) {
-        if (!text || !navigator.clipboard) return;
+      handleBubbleClick(msgId, text) {
+        if (!text || !msgId) return;
         var self = this;
-        navigator.clipboard.writeText(text).then(function () {
-          self.setState({ copiedMessageId: messageId });
-          if (self._copyTimeoutId) clearTimeout(self._copyTimeoutId);
-          self._copyTimeoutId = setTimeout(function () {
-            self._copyTimeoutId = null;
-            self.setState({ copiedMessageId: null });
-          }, 2000);
-        }).catch(function (err) {
+        copyToClipboard(text).then(function(copied) {
+          if (copied) {
+            self.setState({ copiedId: msgId });
+            if (self._copyTimeoutId) clearTimeout(self._copyTimeoutId);
+            self._copyTimeoutId = setTimeout(function() {
+              self._copyTimeoutId = null;
+              self.setState({ copiedId: null });
+            }, 2000);
+          }
+        }).catch(function(err) {
           console.error('Failed to copy:', err);
         });
       }
@@ -1549,7 +1715,7 @@
                 className: "llm-chat-message assistant",
                 style: { maxWidth: "90%", borderLeft: "3px solid #8b5cf6" }
               },
-              React.createElement("div", { className: "llm-avatar assistant-avatar" }, "\uD83D\uDD27"),
+              React.createElement("div", { className: "llm-avatar assistant-avatar" }, "🤖"),
               React.createElement(
                 "div",
                 { style: { flex: 1, minWidth: 0 } },
@@ -1572,42 +1738,13 @@
                     style: { fontSize: "13px", fontFamily: "'Consolas', 'Monaco', monospace", color: "var(--theme-text-primary)" }
                   }, tcPath)
                 ),
-                // Curl code block
-                React.createElement(
-                  "pre",
-                  {
-                    style: {
-                      background: "var(--theme-input-bg)",
-                      border: "1px solid var(--theme-border-color)",
-                      borderRadius: "6px",
-                      padding: "8px 10px",
-                      fontSize: "11px",
-                      fontFamily: "'Consolas', 'Monaco', monospace",
-                      maxHeight: "300px",
-                      overflowY: "auto",
-                      whiteSpace: "pre-wrap",
-                      wordBreak: "break-all",
-                      color: "#a5b4fc",
-                      margin: "6px 0 0 0",
-                      lineHeight: "1.4",
-                    }
-                  },
-                  React.createElement(
-                    "div",
-                    { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" } },
-                    React.createElement("span", { style: { color: "var(--theme-text-secondary)", fontSize: "10px" } }, ""),
-                    React.createElement(
-                      "button",
-                      {
-                        className: "llm-copy-btn",
-                        onClick: function() { self.copyToClipboard(curlCommand, msg.messageId); },
-                        title: "Copy curl command",
-                      },
-                      self.state.copiedMessageId === msg.messageId ? "\u2705" : "\uD83D\uDCCB"
-                    )
-                  ),
-                  curlCommand
-                )
+                // Curl code block - click-to-copy with CodeBlock component
+                React.createElement(createCodeBlock(React), {
+                  key: "curl-codeblock",
+                  text: curlCommand,
+                  language: "shell",
+                  messageId: msg.messageId
+                })
               )
             )
           );
@@ -1640,9 +1777,10 @@
               "div",
               {
                 className: "llm-chat-message assistant",
-                style: { maxWidth: "90%", borderLeft: "3px solid " + statusColor }
+                onClick: function() { self.handleBubbleClick(msg.messageId, responseBody); },
+                style: { maxWidth: "90%", borderLeft: "3px solid " + statusColor, cursor: "pointer" }
               },
-              React.createElement("div", { className: "llm-avatar assistant-avatar", style: { background: "linear-gradient(135deg, " + statusColor + ", #059669)" } }, "\uD83D\uDCE1"),
+              React.createElement("div", { className: "llm-avatar assistant-avatar", style: { background: "linear-gradient(135deg, " + statusColor + ", #059669)" } }, "📡"),
               React.createElement(
                 "div",
                 { style: { flex: 1, minWidth: 0 } },
@@ -1653,38 +1791,16 @@
                     style: { display: "flex", justifyContent: "space-between", alignItems: "center" }
                   },
                   React.createElement("span", { style: { fontSize: "13px", fontWeight: "600", color: statusColor } }, statusLine),
-                  React.createElement(
-                    "button",
-                    {
-                      className: "llm-copy-btn",
-                      onClick: function() { self.copyToClipboard(responseBody, msg.messageId); },
-                      title: "Copy response",
-                      style: { opacity: 1 }
-                    },
-                    self.state.copiedMessageId === msg.messageId ? "\u2705" : "\uD83D\uDCCB"
-                  )
+                  self.state.copiedId === msg.messageId
+                  ? React.createElement("span", { style: { fontSize: "11px", color: "#10b981", fontWeight: "500" } }, "✓ Copied")
+                  : null
                 ),
-                formattedBody ? React.createElement(
-                  "pre",
-                  {
-                    style: {
-                      background: "var(--theme-input-bg)",
-                      border: "1px solid var(--theme-border-color)",
-                      borderRadius: "6px",
-                      padding: "8px 10px",
-                      fontSize: "11px",
-                      fontFamily: "'Consolas', 'Monaco', monospace",
-                      maxHeight: "200px",
-                      overflowY: "auto",
-                      whiteSpace: "pre-wrap",
-                      wordBreak: "break-all",
-                      color: "var(--theme-text-primary)",
-                      margin: "6px 0 0 0",
-                      lineHeight: "1.4",
-                    }
-                  },
-                  formattedBody.substring(0, 2000)
-                ) : null
+                React.createElement(createCodeBlock(React), {
+                  key: "tool-response-codeblock",
+                  text: formattedBody ? formattedBody.substring(0, 2000) : '',
+                  language: "json",
+                  messageId: msg.messageId
+                })
               )
             )
           );
@@ -1697,19 +1813,16 @@
             "div",
             {
               className: "llm-chat-message " + (isUser ? 'user' : 'assistant'),
-              style: { maxWidth: isUser ? "85%" : "90%" }
+              onClick: function() { self.handleBubbleClick(msg.messageId, msg.content); },
+              style: { maxWidth: isUser ? "85%" : "90%", cursor: "pointer" }
             },
             !isUser && React.createElement("div", {
               className: "llm-avatar assistant-avatar",
               title: "AI Assistant"
-            }, "\uD83E\uDD16"),
+            }, "🤖"),
             React.createElement(
               "div",
-              {
-                className: "llm-chat-message-header",
-                onMouseEnter: function() { self.setHeaderHover(msg.messageId || msg.timestamp, true); },
-                onMouseLeave: function() { self.setHeaderHover(msg.messageId || msg.timestamp, false); }
-              },
+              { className: "llm-chat-message-header" },
               isUser
                 ? React.createElement("span", { className: "llm-user-label" }, "You")
                 : React.createElement("div", { style: { display: "flex", alignItems: "center", gap: "6px" } },
@@ -1718,16 +1831,9 @@
                       (msg.messageId || msg.timestamp) ? new Date(parseInt((msg.messageId || "").split('_')[0] || msg.timestamp)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''
                     )
                   ),
-              React.createElement(
-                "button",
-                {
-                  className: "llm-copy-btn",
-                  onClick: function() { self.copyToClipboard(msg.content, msg.messageId); },
-                  title: "Copy message",
-                  style: { opacity: (self.state.headerHover[msg.messageId || msg.timestamp] || self.state.copiedMessageId === msg.messageId) && !isStreamingThisMessage ? 1 : 0 }
-                },
-                self.state.copiedMessageId === msg.messageId ? "\u2705" : "\uD83D\uDCCB"
-              )
+              self.state.copiedId === msg.messageId
+                ? React.createElement("span", { style: { fontSize: "11px", color: "#10b981", fontWeight: "500" } }, "✓ Copied")
+                : null
             ),
             React.createElement(
               "div",
@@ -1794,7 +1900,7 @@
           { style: panelStyle },
           React.createElement("div", { style: headerStyle },
             React.createElement("div", { style: { display: "flex", alignItems: "center", gap: "6px" } },
-              "\uD83D\uDD27 ",
+              "🤖 ",
               React.createElement("span", null, "api_request"),
               React.createElement("span", { style: { color: "var(--theme-text-secondary)", fontWeight: "400", fontSize: "12px" } },
                 s.editMethod + " " + s.editPath
@@ -1837,7 +1943,7 @@
             React.createElement("button", {
               onClick: self.handleExecuteToolCall,
               style: { background: "var(--theme-primary)", color: "#fff", border: "none", borderRadius: "4px", padding: "5px 14px", cursor: "pointer", fontSize: "12px", fontWeight: "500" }
-            }, "\u25B6 Execute"),
+            }, "▶ Execute"),
             React.createElement("button", {
               onClick: function() { self._pendingToolCallMsg = null; self.setState({ pendingToolCall: null, toolCallResponse: null }); },
               style: { background: "var(--theme-accent)", color: "#fff", border: "none", borderRadius: "4px", padding: "5px 14px", cursor: "pointer", fontSize: "12px" }
@@ -1985,10 +2091,6 @@
         saveTheme({ theme: this.state.theme, customColors: this.state.customColors });
       }
 
-      _autoSave() {
-        this._debouncedSave();
-      }
-
       componentDidMount() {
         var stored = loadTheme();
         this.setState({ 
@@ -2005,24 +2107,6 @@
         if (prevState.theme !== this.state.theme || prevState.customColors !== this.state.customColors) {
           window.applyLLMTheme(this.state.theme, this.state.customColors);
         }
-      }
-
-      handleSaveSettings() {
-        var settings = {
-          baseUrl: this.state.baseUrl,
-          apiKey: this.state.apiKey,
-          modelId: this.state.modelId,
-          maxTokens: this.state.maxTokens !== '' ? this.state.maxTokens : null,
-          temperature: this.state.temperature !== '' ? this.state.temperature : null,
-          provider: this.state.provider,
-        };
-        saveToStorage(settings);
-        saveToolSettings({
-          enableTools: this.state.enableTools,
-          autoExecute: this.state.autoExecute,
-          apiKey: this.state.toolApiKey,
-        });
-        saveTheme({ theme: this.state.theme, customColors: this.state.customColors });
       }
 
       handleTestConnection() {
@@ -2093,44 +2177,44 @@
         var provider = LLM_PROVIDERS[value] || LLM_PROVIDERS.custom;
         this.setState({ provider: value, baseUrl: provider.url, availableModels: [], connectionStatus: "disconnected" });
         dispatchAction(system, 'setProvider', value);
-        this._autoSave();
+        this._debouncedSave();
       }
 
       handleBaseUrlChange(e) {
         this.setState({ baseUrl: e.target.value });
         dispatchAction(system, 'setBaseUrl', e.target.value);
-        this._autoSave();
+        this._debouncedSave();
       }
 
       handleApiKeyChange(e) {
         this.setState({ apiKey: e.target.value });
         dispatchAction(system, 'setApiKey', e.target.value);
-        this._autoSave();
+        this._debouncedSave();
       }
 
       handleModelIdChange(e) {
         this.setState({ modelId: e.target.value });
         dispatchAction(system, 'setModelId', e.target.value);
-        this._autoSave();
+        this._debouncedSave();
       }
 
       handleMaxTokensChange(e) {
         this.setState({ maxTokens: e.target.value });
         dispatchAction(system, 'setMaxTokens', e.target.value);
-        this._autoSave();
+        this._debouncedSave();
       }
 
       handleTemperatureChange(e) {
         this.setState({ temperature: e.target.value });
         dispatchAction(system, 'setTemperature', e.target.value);
-        this._autoSave();
+        this._debouncedSave();
       }
 
       handleThemeChange(e) {
         var value = e.target.value;
         this.setState({ theme: value });
         dispatchAction(system, 'setTheme', value);
-        this._autoSave();
+        this._debouncedSave();
       }
 
       handleColorChange(colorKey, e) {
@@ -2141,22 +2225,22 @@
           return { customColors: newColors };
         });
         dispatchAction(system, 'setCustomColor', { key: colorKey, value: value });
-        this._autoSave();
+        this._debouncedSave();
       }
 
       handleEnableToolsChange(e) {
         this.setState({ enableTools: e.target.checked });
-        this._autoSave();
+        this._debouncedSave();
       }
 
       handleAutoExecuteChange(e) {
         this.setState({ autoExecute: e.target.checked });
-        this._autoSave();
+        this._debouncedSave();
       }
 
       handleToolApiKeyChange(e) {
         this.setState({ toolApiKey: e.target.value });
-        this._autoSave();
+        this._debouncedSave();
       }
 
       render() {
@@ -2202,12 +2286,6 @@
             },
             providerOptions
           )
-        );
-
-        var providerBadge = React.createElement(
-          "span",
-          { className: "llm-provider-badge llm-provider-" + s.provider, style: { fontSize: "10px", padding: "2px 8px", borderRadius: "10px", marginLeft: "8px" } },
-          provider.name
         );
 
         var baseUrlField = React.createElement(
@@ -2531,141 +2609,6 @@
     };
   }
 
-  // ── CSS styles object ────────────────────────────────────────────────────────
-  var styles = {
-    chatContainer: {
-      display: "flex",
-      flexDirection: "column",
-      height: "calc(100vh - 90px)",
-      minHeight: "300px",
-    },
-    chatMessages: {
-      flex: 1,
-      overflowY: "auto",
-      padding: "12px",
-      display: "flex",
-      flexDirection: "column",
-      gap: "12px",
-      scrollBehavior: "smooth",
-    },
-    chatMessage: {
-      display: "flex",
-      flexDirection: "column",
-      padding: "10px 14px",
-      borderRadius: "12px",
-      maxWidth: "85%",
-    },
-    chatMessageHeader: {
-      fontSize: "10px",
-      marginBottom: "6px",
-      opacity: 0.8,
-    },
-    chatMessageContent: {
-      fontSize: "15px",
-      lineHeight: "1.6",
-    },
-    copyMessageBtn: {
-      background: "transparent",
-      border: "none",
-      color: "var(--theme-text-secondary)",
-      fontSize: "14px",
-      cursor: "pointer",
-      padding: "2px 6px",
-      borderRadius: "4px",
-      opacity: 0,
-      transition: "opacity 0.2s ease, color 0.2s ease",
-    },
-    chatInputArea: {
-      borderTop: "1px solid var(--theme-border-color)",
-      padding: "12px",
-      width: "100%",
-      maxWidth: "100%",
-      boxSizing: "border-box",
-      flexShrink: 0,
-    },
-    chatInput: {
-      width: "100%",
-      background: "var(--theme-input-bg)",
-      border: "1px solid var(--theme-border-color)",
-      borderRadius: "4px",
-      color: "var(--theme-text-primary)",
-      padding: "10px 12px",
-      fontSize: "14px",
-      resize: "vertical",
-      fontFamily: "'Inter', sans-serif",
-      minHeight: "44px",
-      maxHeight: "200px",
-      overflowWrap: "break-word",
-      wordWrap: "break-word",
-      overflowX: "hidden",
-      boxSizing: "border-box",
-      lineHeight: "1.5",
-    },
-    chatControls: {
-      display: "flex",
-      justifyContent: "space-between",
-      alignItems: "center",
-      marginTop: "8px",
-    },
-    chatButton: {
-      border: "none",
-      borderRadius: "6px",
-      cursor: "pointer",
-      fontSize: "12px",
-      fontWeight: "500",
-      transition: "all 0.2s ease",
-    },
-    chatButtonPrimary: {
-      background: "var(--theme-primary)",
-      color: "#fff",
-      padding: "8px 16px",
-    },
-    chatButtonPrimaryHover: {
-      background: "var(--theme-primary-hover)",
-    },
-    chatButtonDanger: {
-      background: "#dc2626",
-      color: "#fff",
-      padding: "8px 16px",
-    },
-    chatButtonDangerHover: {
-      background: "#b91c1c",
-    },
-    chatButtonSecondary: {
-      background: "var(--theme-accent)",
-      color: "#fff",
-      padding: "8px 12px",
-    },
-    chatButtonSecondaryHover: {
-      background: "#64748b",
-    },
-    smallButton: {
-      background: "var(--theme-accent)",
-      color: "#fff",
-      border: "none",
-      borderRadius: "4px",
-      padding: "4px 10px",
-      cursor: "pointer",
-      fontSize: "10px",
-    },
-    sendButton: {
-      background: "var(--theme-primary)",
-      color: "#fff",
-      border: "none",
-      borderRadius: "4px",
-      padding: "6px 16px",
-      cursor: "pointer",
-      fontSize: "12px",
-    },
-    emptyChat: {
-      textAlign: "center",
-      color: "var(--theme-text-secondary)",
-      padding: "40px 20px",
-      fontSize: "15px",
-      whiteSpace: "pre-line",
-    },
-  };
-
   // ── CSS injection helper ───────────────────────────────────────────────────
   function injectStyles(id, css) {
     if (typeof document === 'undefined') return;
@@ -2687,8 +2630,6 @@
   // ── CSS styles for chat bubbles, avatars, and animations (theme-aware) ─────
   var chatStyles = [
     '.llm-chat-container { display: flex; flex-direction: column; height: 100%; min-height: 0; overflow: hidden; }',
-    
-    '.llm-chat-messages { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch; }',
 
     '.llm-chat-message-wrapper { display: flex; width: 100%; margin-bottom: 8px; box-sizing: border-box; }',
 
@@ -2698,15 +2639,11 @@
 
     '.llm-avatar { width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 18px; margin-right: 8px; flex-shrink: 0; }',
     '.assistant-avatar { background: linear-gradient(135deg, #6366f1, #8b5cf6); }',
-    '.llm-chat-message.assistant .llm-avatar { margin-right: 8px; }',
 
     '.llm-chat-message-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; font-size: 11px; opacity: 0.9; flex-shrink: 0; }',
     '.llm-user-label { font-weight: 600; color: var(--theme-text-primary); }',
     '.llm-assistant-label { font-weight: 600; color: #8b5cf6; }',
     '.llm-chat-message-time { opacity: 0.7; font-size: 10px; }',
-
-    '.llm-copy-btn { background: transparent; border: none; color: var(--theme-text-secondary); font-size: 14px; cursor: pointer; padding: 2px 6px; border-radius: 4px; transition: all 0.2s ease; margin-left: 8px; }',
-    '.llm-copy-btn:hover { background: var(--theme-accent); color: white; transform: scale(1.1); }',
 
     '.llm-chat-message-text { font-size: 15px; line-height: 1.6; word-wrap: break-word; overflow-wrap: break-word; }',
     '.llm-chat-message-text p { margin: 8px 0; }',
@@ -2728,12 +2665,6 @@
     '.llm-chat-message-text code { font-family: "Consolas", "Monaco", monospace; background: rgba(0,0,0,0.15); padding: 2px 6px; border-radius: 4px; font-size: 13px; }',
     '.llm-chat-message-text pre code { background: transparent; padding: 0; }',
 
-    '.code-block-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--theme-border-color); }',
-    '.code-block-label { color: var(--theme-text-secondary); font-size: 12px; font-weight: 600; }',
-    '.code-block-copy { background: var(--theme-secondary); border: none; color: var(--theme-text-primary); padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 11px; transition: all 0.2s; }',
-    '.code-block-copy:hover { background: var(--theme-accent); color: white; }',
-    '.code-block-copy.copied { background: #10b981 !important; color: white; }',
-
     '#llm-chat-messages::-webkit-scrollbar { width: 8px; }',
     '#llm-chat-messages::-webkit-scrollbar-track { background: var(--theme-panel-bg); border-radius: 4px; }',
     '#llm-chat-messages::-webkit-scrollbar-thumb { background: var(--theme-secondary); border-radius: 4px; }',
@@ -2751,7 +2682,6 @@
 
     '@media (min-width: 769px) and (max-width: 1024px) {',
     '  .llm-chat-message { max-width: 80%; }',
-    '  .llm-chat-messages { padding: 10px; }',
     '}',
 
     '@media (min-width: 1200px) {',
@@ -2768,6 +2698,7 @@
     '  .llm-chat-messages { padding: 6px; gap: 6px; }',
     '  .llm-chat-message-header { font-size: 10px; }',
     '  .llm-chat-message-text pre { font-size: 12px; padding: 8px; }',
+    '  .llm-code-block-wrapper { font-size: 12px; }',
     '}',
 
     '@media (max-width: 768px) and (orientation: landscape) {',
@@ -2815,6 +2746,18 @@
     '  background: var(--theme-primary-hover);',
     '  transform: translateY(-1px);',
     '}',
+
+    // CodeBlock component styles
+    '.llm-code-block-wrapper { background: var(--theme-input-bg); border: 1px solid var(--theme-border-color); border-radius: 8px; overflow: hidden; margin: 10px 0; font-family: "Consolas", "Monaco", monospace; font-size: 13px; cursor: pointer; transition: all 0.2s ease; touch-action: manipulation; }',
+    '.llm-code-block-wrapper:hover { border-color: var(--theme-accent); box-shadow: 0 2px 8px rgba(0,0,0,0.1); }',
+    '.llm-code-block-header { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; background: var(--theme-panel-bg); border-bottom: 1px solid var(--theme-border-color); }',
+    '.llm-code-block-language { color: var(--theme-text-secondary); font-size: 10px; font-family: "Inter", sans-serif; font-weight: 600; text-transform: uppercase; }',
+    '.llm-code-block-copy-indicator { color: var(--theme-text-secondary); font-size: 12px; display: flex; align-items: center; gap: 4px; transition: all 0.2s ease; }',
+    '.llm-code-block-content { padding: 14px 12px; margin: 0; overflow-x: auto; white-space: pre-wrap; word-break: break-all; line-height: 1.6; cursor: pointer; }',
+    '.llm-code-block-content code { font-family: "Consolas", "Monaco", monospace; }',
+    '.llm-code-block-content pre { margin: 0; padding: 0; }',
+    '.llm-code-block-content.json { color: #a5b4fc; }',
+
   ].join('\n');
   
   injectStyles('swagger-llm-chat-styles', chatStyles);
@@ -2874,10 +2817,14 @@
 
   // ── Global function to open settings tab ───────────────────────────────────
   window.llmOpenSettings = function() {
-    try {
-      localStorage.setItem("swagger-llm-active-tab", "settings");
-    } catch (e) {
-      console.warn('Failed to switch to settings tab:', e);
+    if (window.llmSwitchTab) {
+      window.llmSwitchTab('settings');
+    } else {
+      try {
+        localStorage.setItem("swagger-llm-active-tab", "settings");
+      } catch (e) {
+        console.warn('Failed to switch to settings tab:', e);
+      }
     }
   };
 })();

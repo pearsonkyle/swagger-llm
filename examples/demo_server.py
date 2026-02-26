@@ -42,10 +42,10 @@ pip install swagger-llm
 
 ```python
 from fastapi import FastAPI
-from swagger_llm import setup_llm_docs
+from swagger_llm import setup_docs
 
 app = FastAPI()
-setup_llm_docs(app)  # Replaces /docs with LLM version
+setup_docs(app)  # replaces default /docs
 ```
 
 ### Example
