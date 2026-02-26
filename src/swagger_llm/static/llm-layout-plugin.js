@@ -67,7 +67,7 @@
         background: "var(--theme-header-bg)",
         height: isContained ? "calc(100vh - 120px)" : "auto",
         minHeight: isContained ? "400px" : "auto",
-        overflow: activeTab === "chat" ? "hidden" : (isContained ? "auto" : "auto"),
+        overflow: isContained ? (activeTab === "chat" ? "hidden" : "auto") : "auto",
         overscrollBehavior: "contain",
         WebkitOverflowScrolling: "touch",
       };

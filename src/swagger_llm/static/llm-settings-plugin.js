@@ -2805,8 +2805,20 @@
       constructor(props) {
         super(props);
         var saved = loadWorkflow();
+        // Normalize persisted blocks to clear transient fields like output/status
+        var initialBlocks;
+        if (saved && saved.blocks && saved.blocks.length) {
+          initialBlocks = saved.blocks.map(function (block) {
+            return Object.assign({}, block, {
+              output: '',
+              status: 'idle'
+            });
+          });
+        } else {
+          initialBlocks = [createDefaultBlock()];
+        }
         this.state = {
-          blocks: saved && saved.blocks ? saved.blocks : [createDefaultBlock()],
+          blocks: initialBlocks,
           running: false,
           currentBlockIdx: -1,
           aborted: false,
@@ -2822,8 +2834,11 @@
       }
 
       componentDidUpdate(prevProps, prevState) {
-        if (prevState.blocks !== this.state.blocks) {
-          saveWorkflow({ blocks: this.state.blocks });
+        if (prevState.blocks !== this.state.blocks && !this.state.running) {
+          var persistedBlocks = this.state.blocks.map(function(b) {
+            return { id: b.id, type: b.type, content: b.content };
+          });
+          saveWorkflow({ blocks: persistedBlocks });
         }
       }
 
@@ -2860,6 +2875,14 @@
 
       handleStart() {
         var self = this;
+        // Check if any block has content
+        var hasContent = self.state.blocks.some(function(b) { return b.content && b.content.trim(); });
+        if (!hasContent) return;
+        // Abort any existing in-flight request
+        if (self._abortController) {
+          self._abortController.abort();
+          self._abortController = null;
+        }
         self.setState(function(prev) {
           return {
             running: true,
@@ -2896,19 +2919,19 @@
 
       runWorkflow() {
         var self = this;
-        var blocks = self.state.blocks.slice();
         var previousOutput = '';
 
         function runBlock(idx) {
-          if (idx >= blocks.length || self.state.aborted) {
+          var currentBlocks = self.state.blocks;
+          if (idx >= currentBlocks.length || self.state.aborted) {
             self.setState({ running: false, currentBlockIdx: -1 });
             return;
           }
 
           self.setState({ currentBlockIdx: idx });
 
-          var block = blocks[idx];
-          var updatedBlocks = self.state.blocks.slice();
+          var block = currentBlocks[idx];
+          var updatedBlocks = currentBlocks.slice();
           updatedBlocks[idx] = Object.assign({}, updatedBlocks[idx], { status: 'running', output: '' });
           self.setState({ blocks: updatedBlocks });
 
@@ -2956,6 +2979,10 @@
           }
 
           var baseUrl = (settings.baseUrl || '').replace(/\/+$/, '');
+          // Abort any existing in-flight request before starting a new one
+          if (self._abortController && typeof self._abortController.abort === 'function') {
+            try { self._abortController.abort(); } catch (e) {}
+          }
           self._abortController = new AbortController();
           var accumulated = '';
           var accumulatedToolCalls = {};
@@ -3039,7 +3066,9 @@
                           return;
                         }
                       }
-                    } catch (e) {}
+                    } catch (e) {
+                      console.error('Error processing streaming chunk:', payloadData, e);
+                    }
                   }
 
                   return processChunk();
@@ -3049,9 +3078,11 @@
               return processChunk();
             })
             .catch(function(err) {
-              if (err.name !== 'AbortError') {
-                finishBlock('Error: ' + (err.message || 'Request failed'));
+              if (err && err.name === 'AbortError') {
+                self._abortController = null;
+                return;
               }
+              finishBlock('Error: ' + (err && err.message ? err.message : 'Request failed'));
             });
 
           function executeToolCall(tc, blockIdx, currentMessages, callback) {
@@ -3085,30 +3116,42 @@
               toolFetchHeaders['Authorization'] = 'Bearer ' + toolApiKey;
             }
 
-            var fetchOpts = { method: method, headers: toolFetchHeaders };
-            if (method === 'POST' && args.body) {
-              fetchOpts.body = JSON.stringify(args.body);
+            var hasBody = args.body && (method === 'POST' || method === 'PUT' || method === 'PATCH');
+            if (hasBody) {
               toolFetchHeaders['Content-Type'] = 'application/json';
+            }
+
+            var fetchOpts = { method: method, headers: toolFetchHeaders };
+            if (hasBody) {
+              fetchOpts.body = JSON.stringify(args.body);
+            }
+            // Respect abort signal for tool calls
+            if (self._abortController) {
+              fetchOpts.signal = self._abortController.signal;
             }
 
             fetch(url, fetchOpts)
               .then(function(res) {
+                if (self.state.aborted) return;
                 return res.text().then(function(text) {
+                  if (self.state.aborted) return;
                   callback('Status: ' + res.status + ' ' + res.statusText + '\n\n' + text.substring(0, 4000));
                 });
               })
               .catch(function(err) {
+                if (err && err.name === 'AbortError') return;
                 callback('Error: ' + err.message);
               });
           }
 
           function finishBlock(output) {
-            previousOutput = output;
             var currentBlocks = self.state.blocks.slice();
             currentBlocks[idx] = Object.assign({}, currentBlocks[idx], {
               output: output || '(no output)',
               status: 'done'
             });
+            // Update previousOutput for chaining into next block
+            previousOutput = output || '';
             self.setState({ blocks: currentBlocks }, function() {
               runBlock(idx + 1);
             });
@@ -3165,6 +3208,9 @@
           gap: '12px',
         };
 
+        var hasContent = s.blocks.some(function(b) { return b.content && b.content.trim(); });
+        var startDisabled = s.running || !hasContent;
+
         return React.createElement(
           'div',
           { style: containerStyle },
@@ -3174,8 +3220,8 @@
             { style: toolbarStyle },
             React.createElement('button', {
               onClick: self.handleStart,
-              disabled: s.running,
-              style: Object.assign({}, btnStyle('#10b981'), s.running ? { opacity: 0.5, cursor: 'not-allowed' } : {})
+              disabled: startDisabled,
+              style: Object.assign({}, btnStyle('#10b981'), startDisabled ? { opacity: 0.5, cursor: 'not-allowed' } : {})
             }, '▶ Start'),
             React.createElement('button', {
               onClick: self.handleStop,
@@ -3342,10 +3388,7 @@
 
   // ── Workflow panel CSS ─────────────────────────────────────────────────────
   var workflowStyles = [
-    '.llm-workflow-container { display: flex; flex-direction: column; height: 100%; min-height: 0; overflow: hidden; }',
-    '.llm-workflow-block { background: var(--theme-input-bg); border: 1px solid var(--theme-border-color); border-radius: 8px; overflow: hidden; transition: all 0.2s ease; }',
     '.llm-workflow-block:hover { border-color: var(--theme-accent); box-shadow: 0 2px 8px rgba(0,0,0,0.1); }',
-    '.llm-workflow-block-header { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; background: var(--theme-panel-bg); border-bottom: 1px solid var(--theme-border-color); }',
   ].join('\n');
 
   injectStyles('swagger-llm-workflow-styles', workflowStyles);
