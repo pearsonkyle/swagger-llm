@@ -18,7 +18,7 @@ import os
 # Allow running from the repo root without installing the package
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from swagger_llm import setup_llm_docs
+from swagger_llm import setup_docs
 
 app = FastAPI(
     title="Invoice API",
@@ -56,7 +56,7 @@ Use the **Chat** panel to ask questions about these endpoints!
 )
 
 # Mount the LLM-enhanced Swagger UI (replaces the default /docs)
-setup_llm_docs(app, debug=True)
+setup_docs(app, debug=True)
 
 # ── Pydantic Models for Invoicing ────────────────────────────────────────────
 

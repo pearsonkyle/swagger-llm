@@ -69,7 +69,7 @@ def get_swagger_ui_html(
     return HTMLResponse(html)
 
 
-def setup_llm_docs(
+def setup_docs(
     app: FastAPI,
     *,
     docs_url: str = "/docs",

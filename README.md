@@ -23,10 +23,10 @@ pip install swagger-llm
 
 ```python
 from fastapi import FastAPI
-from swagger_llm import setup_llm_docs
+from swagger_llm import setup_docs
 
 app = FastAPI()
-setup_llm_docs(app)  # Replaces /docs with LLM version
+setup_docs(app)  # replaces default /docs
 ```
 
 That's it! Visit `/docs` and:
@@ -55,10 +55,3 @@ pytest tests/
 ```bash
 uvicorn examples.demo_server:app --reload
 ```
-
-## To Do
-- add the curl request to a copiable code block in UI message after tool call
-- Disable the clear chat button and send button while the request is streaming back
-- default system prompt on start up is missing the tooling template for openapi docs
-
-- expose system prompt settings into file so it can be edited more easily and support presets in the future
