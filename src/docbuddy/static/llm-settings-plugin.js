@@ -12,7 +12,7 @@
     
     try {
       var xhr = new XMLHttpRequest();
-      xhr.open('GET', '/swagger-llm-static/system-prompt-config.json', true);
+      xhr.open('GET', '/docbuddy-static/system-prompt-config.json', true);
       xhr.timeout = 3000;
       xhr.onload = function() {
         if (xhr.status === 200) {
@@ -448,10 +448,10 @@
     }
   };
 
-  var THEME_STORAGE_KEY = "swagger-llm-theme";
-  var SETTINGS_STORAGE_KEY = "swagger-llm-settings";
-  var CHAT_HISTORY_KEY = "swagger-llm-chat-history";
-  var TOOL_SETTINGS_KEY = "swagger-llm-tool-settings";
+  var THEME_STORAGE_KEY = "docbuddy-theme";
+  var SETTINGS_STORAGE_KEY = "docbuddy-settings";
+  var CHAT_HISTORY_KEY = "docbuddy-chat-history";
+  var TOOL_SETTINGS_KEY = "docbuddy-tool-settings";
 
   // ── Theme loading/saving functions ─────────────────────────────────────────
   function loadTheme() {
@@ -2840,10 +2840,10 @@
 
   ].join('\n');
   
-  injectStyles('swagger-llm-chat-styles', chatStyles);
+  injectStyles('docbuddy-chat-styles', chatStyles);
 
   // ── Workflow storage helpers ────────────────────────────────────────────────
-  var WORKFLOW_STORAGE_KEY = 'swagger-llm-workflow';
+  var WORKFLOW_STORAGE_KEY = 'docbuddy-workflow';
 
   function loadWorkflow() {
     try {
@@ -3540,7 +3540,7 @@
     ].join('; ');
 
     var css = ':root { ' + cssVars + ' }';
-    var themeStyle = document.getElementById('swagger-llm-theme-styles');
+    var themeStyle = document.getElementById('docbuddy-theme-styles');
     
     if (themeStyle) {
       if (themeStyle.textContent !== css) {
@@ -3548,7 +3548,7 @@
       }
     } else {
       themeStyle = document.createElement('style');
-      themeStyle.id = 'swagger-llm-theme-styles';
+      themeStyle.id = 'docbuddy-theme-styles';
       themeStyle.textContent = css;
       document.head.appendChild(themeStyle);
     }
@@ -3560,7 +3560,7 @@
       window.llmSwitchTab('settings');
     } else {
       try {
-        localStorage.setItem("swagger-llm-active-tab", "settings");
+        localStorage.setItem("docbuddy-active-tab", "settings");
       } catch (e) {
         console.warn('Failed to switch to settings tab:', e);
       }

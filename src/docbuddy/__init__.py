@@ -1,9 +1,9 @@
-"""swagger-llm: Add an LLM configuration panel to your FastAPI Swagger UI docs."""
+"""docbuddy: Add an LLM configuration panel to your FastAPI Swagger UI docs."""
 
 from importlib.metadata import version
 
 try:
-    __version__ = version("swagger-llm")
+    __version__ = version("docbuddy")
 except Exception:
     __version__ = "unknown"
 

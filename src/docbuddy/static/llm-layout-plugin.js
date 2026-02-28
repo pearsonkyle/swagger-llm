@@ -5,7 +5,7 @@
   "use strict";
 
   // Storage key for persisting active tab
-  var TAB_STORAGE_KEY = "swagger-llm-active-tab";
+  var TAB_STORAGE_KEY = "docbuddy-active-tab";
   
   window.LLMLayoutPlugin = function (system) {
     var React = system.React;

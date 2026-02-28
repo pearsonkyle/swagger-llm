@@ -3,8 +3,8 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "swagger-llm"
-version = "0.3.0"
+name = "docbuddy"
+version = "0.4.0"
 description = "Add an AI Assistant to your `/docs` page."
 description-content-type = "text/markdown"
 readme = "README.md"
@@ -40,11 +40,11 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/pearsonkyle/swagger-llm"
-Repository = "https://github.com/pearsonkyle/swagger-llm"
+Homepage = "https://github.com/pearsonkyle/docbuddy"
+Repository = "https://github.com/pearsonkyle/docbuddy"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/swagger_llm"]
+packages = ["src/docbuddy"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

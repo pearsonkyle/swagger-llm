@@ -1,4 +1,4 @@
-"""Demo FastAPI server showcasing swagger-llm-ui integration.
+"""Demo FastAPI server showcasing DocBuddy integration.
 
 Run with:
     uvicorn examples.demo_server:app --reload
@@ -18,13 +18,13 @@ import os
 # Allow running from the repo root without installing the package
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from swagger_llm import setup_docs
+from docbuddy import setup_docs
 
 app = FastAPI(
     title="Invoice API",
     version="0.3.0",
     description="""
-A demonstration of LLM-enhanced API documentation using the [swagger-llm-plugin](https://github.com/pearsonkyle/swagger-llm-plugin).
+A demonstration of LLM-enhanced API documentation using DocBuddy.
 
 ## Features
 
@@ -36,14 +36,14 @@ A demonstration of LLM-enhanced API documentation using the [swagger-llm-plugin]
 ## Installation
 
 ```bash
-pip install swagger-llm
+pip install docbuddy
 ```
 
 ## Quick Start
 
 ```python
 from fastapi import FastAPI
-from swagger_llm import setup_docs
+from docbuddy import setup_docs
 
 app = FastAPI()
 setup_docs(app)  # replaces default /docs

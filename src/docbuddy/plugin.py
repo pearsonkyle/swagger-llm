@@ -29,15 +29,15 @@ def get_swagger_ui_html(
     title: str,
     swagger_js_url: str = "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js",
     swagger_css_url: str = "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css",
-    theme_css_url: str = "/swagger-llm-static/themes/light-theme.css",
-    llm_settings_js_url: str = "/swagger-llm-static/llm-settings-plugin.js",
-    llm_layout_js_url: str = "/swagger-llm-static/llm-layout-plugin.js",
+    theme_css_url: str = "/docbuddy-static/themes/light-theme.css",
+    llm_settings_js_url: str = "/docbuddy-static/llm-settings-plugin.js",
+    llm_layout_js_url: str = "/docbuddy-static/llm-layout-plugin.js",
     debug: bool = False,
 ) -> HTMLResponse:
     """Return an HTMLResponse with the custom Swagger UI + LLM settings panel.
 
     This is the lower-level helper for users who want to serve the page manually.
-    Most users should use :func:`setup_llm_docs` instead.
+    Most users should use :func:`setup_docs` instead.
 
     Args:
         openapi_url: URL of the OpenAPI JSON schema.
@@ -77,14 +77,14 @@ def setup_docs(
     openapi_url: Optional[str] = None,
     swagger_js_url: str = "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js",
     swagger_css_url: str = "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css",
-    theme_css_url: str = "/swagger-llm-static/themes/light-theme.css",
+    theme_css_url: str = "/docbuddy-static/themes/light-theme.css",
     debug: bool = False,
 ) -> None:
     """Mount the LLM-enhanced Swagger UI docs on a FastAPI application.
 
     This function:
     1. Disables FastAPI's default ``/docs`` route.
-    2. Mounts the package's static JS files at ``/swagger-llm-static``.
+    2. Mounts the package's static JS files at ``/docbuddy-static``.
     3. Registers a new ``docs_url`` route that serves the custom Swagger UI page
        with the LLM settings panel injected.
 
@@ -134,13 +134,13 @@ def setup_docs(
 
         # Mount static files for the plugin JS inside the lock to prevent TOCTOU race
         already_mounted = any(
-            getattr(r, "name", None) == "swagger-llm-static" for r in app.router.routes
+            getattr(r, "name", None) == "docbuddy-static" for r in app.router.routes
         )
         if not already_mounted:
             app.mount(
-                "/swagger-llm-static",
+                "/docbuddy-static",
                 StaticFiles(directory=str(_STATIC_DIR)),
-                name="swagger-llm-static",
+                name="docbuddy-static",
             )
 
         # Mark this app as having LLM docs setup
@@ -155,7 +155,7 @@ def setup_docs(
             swagger_js_url=swagger_js_url,
             swagger_css_url=swagger_css_url,
             theme_css_url=theme_css_url,
-            llm_settings_js_url="/swagger-llm-static/llm-settings-plugin.js",
-            llm_layout_js_url="/swagger-llm-static/llm-layout-plugin.js",
+            llm_settings_js_url="/docbuddy-static/llm-settings-plugin.js",
+            llm_layout_js_url="/docbuddy-static/llm-layout-plugin.js",
             debug=debug,
         )

@@ -1,4 +1,4 @@
-# SwaggerUI LLM Plugin
+# DocBuddy
 
 > Add an AI assistant to your `/docs` page.
 
@@ -15,14 +15,14 @@
 ## Installation
 
 ```bash
-pip install swagger-llm
+pip install docbuddy
 ```
 
 ## Quick Start
 
 ```python
 from fastapi import FastAPI
-from swagger_llm import setup_docs
+from docbuddy import setup_docs
 
 app = FastAPI()
 setup_docs(app)  # replaces default /docs
@@ -70,4 +70,4 @@ uvicorn examples.demo_server:app --reload
 - More LLM providers (Azure, Hugging Face, etc.)
 - Support for reasoning chains in chat and workflow
 - Update styling for Authenticated API and authorize button in /docs page
-- Suppport for other web frameworks like Flask, Django, etc.
+- Support for other web frameworks like Flask, Django, etc.

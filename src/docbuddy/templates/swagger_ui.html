@@ -10,7 +10,7 @@
     <script>
       (function() {
         try {
-          var themeData = JSON.parse(localStorage.getItem('swagger-llm-theme') || '{"theme":"light","customColors":{}}');
+          var themeData = JSON.parse(localStorage.getItem('docbuddy-theme') || '{"theme":"light","customColors":{}}');
           var colors = {
             dark: { primary: '#1d4ed8', background: '#0f172a', textPrimary: '#f7fafc', secondary: '#2d3748', panelBg: '#1f2937', headerBg: '#111827', borderColor: '#4a5568', textSecondary: '#cbd5e0', inputBg: '#1f2937', accent: '#718096', primaryHover: '#1e40af' },
             light: { primary: '#2563eb', background: '#f7fafc', textPrimary: '#1a202c', secondary: '#e2e8f0', panelBg: '#ffffff', headerBg: '#edf2f7', borderColor: '#cbd5e0', textSecondary: '#4a5568', inputBg: '#f7fafc', accent: '#718096', primaryHover: '#1d4ed8' }
@@ -19,7 +19,7 @@
           var merged = Object.assign({}, theme, themeData.customColors || {});
           var css = ':root { --theme-primary: ' + merged.primary + '; --theme-primary-hover: ' + (merged.primaryHover || merged.primary) + '; --theme-background: ' + merged.background + '; --theme-text-primary: ' + merged.textPrimary + '; --theme-secondary: ' + merged.secondary + '; --theme-panel-bg: ' + (merged.panelBg || merged.secondary) + '; --theme-header-bg: ' + (merged.headerBg || merged.background) + '; --theme-border-color: ' + (merged.borderColor || merged.secondary) + '; --theme-text-secondary: ' + (merged.textSecondary || '#6b7280') + '; --theme-input-bg: ' + (merged.inputBg || merged.secondary) + '; --theme-accent: ' + merged.accent + '; }';
           var style = document.createElement('style');
-          style.id = 'swagger-llm-theme-styles';
+          style.id = 'docbuddy-theme-styles';
           style.textContent = css;
           document.head.appendChild(style);
         } catch(e) {}
@@ -54,7 +54,7 @@
 
     <script>
       // Read LLM settings from localStorage (set by the LLMSettingsPanel)
-      var STORAGE_KEY = "swagger-llm-settings";
+      var STORAGE_KEY = "docbuddy-settings";
 
       function getLLMSettings() {
         try {
