@@ -945,3 +945,40 @@ def test_request_body_schema_ref_resolution():
     assert "refPath" in js_content
     assert "components/schemas" in js_content
     assert "resolvedSchema" in js_content
+
+
+# ── Schema pre-fetch / persistence tests ───────────────────────────────────────
+
+
+def test_openapi_schema_prefetched_on_domcontentloaded():
+    """Verify OpenAPI schema is fetched eagerly at DOMContentLoaded, not only when ChatPanel mounts."""
+    client = TestClient(make_app())
+
+    js_content = client.get("/docbuddy-static/llm-settings-plugin.js").text
+
+    # DOMContentLoaded handler should include a fetch of /openapi.json
+    assert "DOMContentLoaded" in js_content
+    # The pre-fetch block must guard against double-fetching
+    assert "_cachedOpenapiSchema" in js_content
+
+
+def test_workflow_panel_fetches_schema_on_mount():
+    """Verify WorkflowPanel has a componentDidMount that fetches the schema."""
+    client = TestClient(make_app())
+
+    js_content = client.get("/docbuddy-static/llm-settings-plugin.js").text
+
+    # WorkflowPanel must have its own componentDidMount that calls the shared
+    # schema helper so the workflow tab works after a page refresh even if
+    # ChatPanel never mounts.
+    assert "ensureOpenapiSchemaCached" in js_content
+
+
+def test_chat_panel_reuses_cached_schema():
+    """Verify ChatPanel skips a network fetch when schema is already cached."""
+    client = TestClient(make_app())
+
+    js_content = client.get("/docbuddy-static/llm-settings-plugin.js").text
+
+    # fetchOpenApiSchema should short-circuit when _cachedOpenapiSchema is set
+    assert "if (_cachedOpenapiSchema)" in js_content

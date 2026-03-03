@@ -438,6 +438,32 @@
 
   // In-memory cache for the OpenAPI schema (not persisted to localStorage to avoid quota issues)
   var _cachedOpenapiSchema = null;
+  // In-flight fetch promise to prevent duplicate concurrent requests
+  var _openapiSchemaFetchPromise = null;
+
+  // Shared helper: fetch and cache the OpenAPI schema exactly once at a time.
+  function ensureOpenapiSchemaCached(onDone) {
+    if (_cachedOpenapiSchema) {
+      if (onDone) onDone(_cachedOpenapiSchema);
+      return;
+    }
+    if (!_openapiSchemaFetchPromise) {
+      _openapiSchemaFetchPromise = fetch("/openapi.json")
+        .then(function(res) { return res.json(); })
+        .then(function(schema) {
+          _cachedOpenapiSchema = schema;
+          _openapiSchemaFetchPromise = null;
+          return schema;
+        })
+        .catch(function(err) {
+          _openapiSchemaFetchPromise = null;
+          console.warn('Failed to fetch OpenAPI schema:', err);
+        });
+    }
+    if (onDone) {
+      _openapiSchemaFetchPromise.then(onDone).catch(function() {});
+    }
+  }
 
   // ── Theme loading/saving functions ─────────────────────────────────────────
   function loadTheme() {
@@ -553,6 +579,10 @@
 
   document.addEventListener('DOMContentLoaded', function() {
     window.applyLLMTheme(storedTheme.theme, storedTheme.customColors);
+
+    // Eagerly fetch the OpenAPI schema so all panels (Chat, Workflow) have
+    // API context regardless of which tab is active when the page loads.
+    ensureOpenapiSchemaCached();
   });
 
   var DEFAULT_STATE = {
@@ -1086,27 +1116,26 @@
 
       fetchOpenApiSchema() {
         var self = this;
-        
+
+        // Use the shared helper to avoid duplicate in-flight requests.
+        // Dispatch the schema into the Redux-like state once it is available.
+        ensureOpenapiSchemaCached(function(schema) {
+          if (schema) {
+            dispatchAction(system, 'setOpenApiSchema', schema);
+          }
+          self.setState({ schemaLoading: false });
+        });
+
+        // If there is already a cached schema, the callback fires synchronously
+        // inside ensureOpenapiSchemaCached, so we are done.
+        if (_cachedOpenapiSchema) return;
+
+        // Otherwise mark loading while the in-flight fetch resolves.
         if (this._fetchAbortController) {
           this._fetchAbortController.abort();
         }
-        
         self._fetchAbortController = new AbortController();
         self.setState({ schemaLoading: true });
-        
-        fetch("/openapi.json", { signal: self._fetchAbortController.signal })
-          .then(function (res) { return res.json(); })
-          .then(function (schema) {
-            dispatchAction(system, 'setOpenApiSchema', schema);
-            _cachedOpenapiSchema = schema;
-            self.setState({ schemaLoading: false });
-          })
-          .catch(function (err) {
-            if (err.name !== 'AbortError') {
-              console.warn('Failed to fetch OpenAPI schema:', err);
-              self.setState({ schemaLoading: false });
-            }
-          });
       }
 
       addMessage(msg) {
@@ -2890,6 +2919,13 @@
         this.handleBlockContentChange = this.handleBlockContentChange.bind(this);
         this.handleToggleBlockTools = this.handleToggleBlockTools.bind(this);
         this.runWorkflow = this.runWorkflow.bind(this);
+      }
+
+      componentDidMount() {
+        // Use the shared helper to ensure the OpenAPI schema is cached.
+        // Covers the case where Workflow is the active tab on page load and
+        // ChatPanel never mounts (so its own fetchOpenApiSchema() is never called).
+        ensureOpenapiSchemaCached();
       }
 
       componentDidUpdate(prevProps, prevState) {
