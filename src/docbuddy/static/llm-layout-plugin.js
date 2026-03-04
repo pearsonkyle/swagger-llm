@@ -138,8 +138,10 @@
           // Workflow tab content
           activeTab === "workflow" ? React.createElement(WorkflowPanel, null) : null,
 
-          // Synthesizer tab content
-          activeTab === "synthesizer" ? React.createElement(SynthesizerPanel, null) : null,
+          // Synthesizer tab content (always mounted, hidden via CSS to preserve state across tab switches)
+          React.createElement("div", { style: { display: activeTab === "synthesizer" ? "block" : "none", height: "100%" } },
+            React.createElement(SynthesizerPanel, null)
+          ),
 
           // LLM Settings tab content
           activeTab === "settings" ? React.createElement(LLMSettingsPanel, null) : null

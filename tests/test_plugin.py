@@ -988,13 +988,15 @@ def test_chat_panel_reuses_cached_schema():
 
 
 def test_synthesizer_tab_in_layout():
-    """Verify layout plugin has Synthesizer tab."""
+    """Verify layout plugin has Synthesizer tab with CSS-hidden persistence."""
     client = TestClient(make_app())
 
     js_content = client.get("/docbuddy-static/llm-layout-plugin.js").text
 
     assert "synthesizer" in js_content.lower()
     assert "SynthesizerPanel" in js_content
+    # Should use CSS display:none to persist state, not conditional rendering
+    assert 'display: activeTab === "synthesizer"' in js_content
 
 
 def test_synthesizer_panel_component():
@@ -1040,7 +1042,6 @@ def test_synthesizer_data_generation():
 
     assert "handleGenerateData" in js_content
     assert "numSamples" in js_content
-    assert "batchSize" in js_content
     assert "generatedData" in js_content
 
 
@@ -1107,14 +1108,16 @@ def test_synthesizer_uses_preset_system_prompt():
     assert "getSystemPromptForPreset" in js_content
 
 
-def test_synthesizer_preview_section():
-    """Verify synthesizer has a preview section for generated data."""
+def test_synthesizer_sample_list():
+    """Verify synthesizer has a sample list with inspect and delete buttons."""
     client = TestClient(make_app())
 
     js_content = client.get("/docbuddy-static/llm-settings-plugin.js").text
 
-    assert "previewIdx" in js_content
-    assert "Preview" in js_content
+    assert "inspectIdx" in js_content
+    assert "handleDeleteSample" in js_content
+    assert "handleInspectSample" in js_content
+    assert "Generated Samples" in js_content
 
 
 def test_synthesizer_stop_functionality():
@@ -1220,3 +1223,26 @@ def test_synthesizer_tool_calls_enabled_by_default():
 
     # enableToolCalls should default to true (not false)
     assert "enableToolCalls: saved.enableToolCalls !== false" in js_content
+
+
+def test_synthesizer_sequential_generation():
+    """Verify synthesizer generates one sample at a time (no batch)."""
+    client = TestClient(make_app())
+
+    js_content = client.get("/docbuddy-static/llm-settings-plugin.js").text
+
+    # Should generate sequentially, not in batches
+    assert "generateNext" in js_content
+    # Should not have batch size
+    assert "batchSize" not in js_content
+
+
+def test_synthesizer_state_persistence():
+    """Verify synthesizer persists topics and generated data to localStorage."""
+    client = TestClient(make_app())
+
+    js_content = client.get("/docbuddy-static/llm-settings-plugin.js").text
+
+    # Should persist topics and generatedData in saveSynthSettings
+    assert "topics: this.state.topics" in js_content
+    assert "generatedData: this.state.generatedData" in js_content

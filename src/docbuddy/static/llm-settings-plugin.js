@@ -3756,7 +3756,6 @@
           genSystemPrompt: saved.genSystemPrompt || buildDefaultGenSystemPrompt(),
           genInstructions: saved.genInstructions || buildDefaultGenInstructions(),
           numSamples: saved.numSamples != null ? saved.numSamples : 4,
-          batchSize: saved.batchSize != null ? saved.batchSize : 3,
           includeSystemMessage: saved.includeSystemMessage !== false,
           enableToolCalls: saved.enableToolCalls !== false,
           outputSystemPrompt: saved.outputSystemPrompt || buildDefaultOutputSystemPrompt(),
@@ -3765,7 +3764,7 @@
           dataProgress: '',
 
           // Preview
-          previewIdx: 0,
+          inspectIdx: -1,  // -1 means no sample expanded
         };
         this._abortController = null;
         this.handleGenerateTopics = this.handleGenerateTopics.bind(this);
@@ -3776,6 +3775,8 @@
         this.handleExportData = this.handleExportData.bind(this);
         this.handleClearTopics = this.handleClearTopics.bind(this);
         this.handleClearData = this.handleClearData.bind(this);
+        this.handleDeleteSample = this.handleDeleteSample.bind(this);
+        this.handleInspectSample = this.handleInspectSample.bind(this);
       }
 
       componentDidMount() {
@@ -3800,7 +3801,7 @@
       }
 
       componentDidUpdate(prevProps, prevState) {
-        // Persist key settings (not generated data to avoid quota issues)
+        // Persist key settings and generated data
         if (prevState.topicPrompt !== this.state.topicPrompt ||
             prevState.topicDepth !== this.state.topicDepth ||
             prevState.topicDegree !== this.state.topicDegree ||
@@ -3808,10 +3809,11 @@
             prevState.genSystemPrompt !== this.state.genSystemPrompt ||
             prevState.genInstructions !== this.state.genInstructions ||
             prevState.numSamples !== this.state.numSamples ||
-            prevState.batchSize !== this.state.batchSize ||
             prevState.includeSystemMessage !== this.state.includeSystemMessage ||
             prevState.enableToolCalls !== this.state.enableToolCalls ||
-            prevState.outputSystemPrompt !== this.state.outputSystemPrompt) {
+            prevState.outputSystemPrompt !== this.state.outputSystemPrompt ||
+            prevState.topics !== this.state.topics ||
+            prevState.generatedData !== this.state.generatedData) {
           saveSynthSettings({
             topicPrompt: this.state.topicPrompt,
             topicDepth: this.state.topicDepth,
@@ -3820,10 +3822,11 @@
             genSystemPrompt: this.state.genSystemPrompt,
             genInstructions: this.state.genInstructions,
             numSamples: this.state.numSamples,
-            batchSize: this.state.batchSize,
             includeSystemMessage: this.state.includeSystemMessage,
             enableToolCalls: this.state.enableToolCalls,
             outputSystemPrompt: this.state.outputSystemPrompt,
+            topics: this.state.topics,
+            generatedData: this.state.generatedData,
           });
         }
       }
@@ -3995,7 +3998,7 @@
         });
       }
 
-      // ── Training data generation ────────────────────────────────────────
+      // ── Training data generation (sequential, one at a time) ─────────────
       handleGenerateData() {
         var self = this;
         var topics = this.state.topics;
@@ -4007,7 +4010,6 @@
         this._abortController = new AbortController();
         var signal = this._abortController.signal;
         var numSamples = Math.max(1, parseInt(this.state.numSamples) || 4);
-        var batchSize = Math.max(1, parseInt(this.state.batchSize) || 3);
         var includeSystem = this.state.includeSystemMessage;
         var enableToolCalls = this.state.enableToolCalls;
         var outputSystemPrompt = this.state.outputSystemPrompt.trim();
@@ -4032,150 +4034,138 @@
           }
         }
 
+        // Keep existing data and append new samples
+        var existingData = self.state.generatedData.slice();
+
         self.setState({
           dataGenerating: true,
-          dataProgress: 'Generating training data (0/' + numSamples + ')...',
-          generatedData: []
+          dataProgress: 'Generating sample 1/' + numSamples + '...',
         });
 
-        var allData = [];
         // Pick topics round-robin for the samples
         var topicList = topics.filter(function(t) { return t.topic; }).map(function(t) { return t.topic; });
         if (topicList.length === 0) topicList = ['general knowledge'];
 
-        var i = 0;
+        var completed = 0;
 
-        function generateBatch() {
-          if (i >= numSamples || signal.aborted) {
+        function generateNext() {
+          if (completed >= numSamples || signal.aborted) {
             self.setState({
-              generatedData: allData,
               dataGenerating: false,
-              dataProgress: 'Generated ' + allData.length + ' training examples'
+              dataProgress: 'Generated ' + completed + ' training example' + (completed !== 1 ? 's' : '')
             });
             return Promise.resolve();
           }
 
-          var batchPromises = [];
-          for (var b = 0; b < batchSize && (i + b) < numSamples; b++) {
-            (function(idx) {
-              var topicIdx = idx % topicList.length;
-              var topic = topicList[topicIdx];
+          var idx = completed;
+          var topicIdx = idx % topicList.length;
+          var topic = topicList[topicIdx];
 
-              var userPrompt;
-              if (enableToolCalls && toolDef) {
-                userPrompt = 'Generate a realistic training example where a user asks about "' + topic + '" ' +
-                  'and the assistant uses the api_request tool to fulfill the request.\n\n' +
-                  'Available tool:\n' + JSON.stringify(toolDef, null, 2) + '\n\n' +
-                  (resolvedGenInstructions ? 'Instructions: ' + resolvedGenInstructions + '\n\n' : '') +
-                  'Return ONLY a JSON object with these fields:\n' +
-                  '- "user_message": the user\'s natural-language request (string)\n' +
-                  '- "tool_name": "api_request" (string)\n' +
-                  '- "tool_arguments": arguments object with "method", "path", and optionally "query_params", "path_params", "body" (object)\n' +
-                  '- "tool_result": a realistic JSON response the API would return (string)\n' +
-                  '- "assistant_response": the assistant\'s final natural-language answer summarizing the result (string)';
-              } else {
-                userPrompt = 'Generate a training example about: "' + topic + '"\n\n' +
-                  (resolvedGenInstructions ? 'Instructions: ' + resolvedGenInstructions + '\n\n' : '') +
-                  (openapiContext ? 'API Context (for reference):\n' + openapiContext.substring(0, 2000) + '\n\n' : '') +
-                  'Return ONLY a JSON object with these fields:\n' +
-                  '- "user_message": a realistic user question (string)\n' +
-                  '- "assistant_response": a detailed, helpful answer (string)';
-              }
+          self.setState({
+            dataProgress: 'Generating sample ' + (idx + 1) + '/' + numSamples + '...'
+          });
 
-              var promise = self._callLLM([
-                { role: 'system', content: genSysPrompt },
-                { role: 'user', content: userPrompt }
-              ], signal)
-              .then(function(content) {
-                try {
-                  // Strip markdown code fences before extracting JSON
-                  var stripped = content.replace(/```(?:json)?\s*/gi, '').replace(/```/g, '').trim();
-                  var match = stripped.match(/\{[\s\S]*\}/);
-                  if (match) {
-                    var parsed = JSON.parse(match[0]);
-                    var messages = [];
-
-                    if (includeSystem) {
-                      messages.push({
-                        role: 'system',
-                        content: resolvedOutputSystemPrompt
-                      });
-                    }
-
-                    messages.push({
-                      role: 'user',
-                      content: parsed.user_message || 'No question generated'
-                    });
-
-                    if (enableToolCalls && parsed.tool_name) {
-                      // Assistant issues a tool call
-                      var callId = 'call_' + (idx + 1);
-                      messages.push({
-                        role: 'assistant',
-                        content: '',
-                        tool_calls: [{
-                          id: callId,
-                          type: 'function',
-                          function: {
-                            name: parsed.tool_name,
-                            arguments: typeof parsed.tool_arguments === 'string'
-                              ? parsed.tool_arguments
-                              : JSON.stringify(parsed.tool_arguments || {})
-                          }
-                        }]
-                      });
-
-                      // Tool responds
-                      var toolContent = typeof parsed.tool_result === 'string'
-                        ? parsed.tool_result
-                        : JSON.stringify(parsed.tool_result || {});
-                      messages.push({
-                        role: 'tool',
-                        name: parsed.tool_name,
-                        tool_call_id: callId,
-                        content: toolContent
-                      });
-                    }
-
-                    // Final assistant response
-                    messages.push({
-                      role: 'assistant',
-                      content: parsed.assistant_response || 'No answer generated'
-                    });
-
-                    return { messages: messages };
-                  }
-                } catch (e) {
-                  console.warn('Failed to parse generated data:', e);
-                }
-                return null;
-              })
-              .catch(function(err) {
-                if (err.name !== 'AbortError') {
-                  console.warn('Generation error for sample ' + idx + ':', err);
-                }
-                return null;
-              });
-
-              batchPromises.push(promise);
-            })(i + b);
+          var userPrompt;
+          if (enableToolCalls && toolDef) {
+            userPrompt = 'Generate a realistic training example where a user asks about "' + topic + '" ' +
+              'and the assistant uses the api_request tool to fulfill the request.\n\n' +
+              'Available tool:\n' + JSON.stringify(toolDef, null, 2) + '\n\n' +
+              (resolvedGenInstructions ? 'Instructions: ' + resolvedGenInstructions + '\n\n' : '') +
+              'Return ONLY a JSON object with these fields:\n' +
+              '- "user_message": the user\'s natural-language request (string)\n' +
+              '- "tool_name": "api_request" (string)\n' +
+              '- "tool_arguments": arguments object with "method", "path", and optionally "query_params", "path_params", "body" (object)\n' +
+              '- "tool_result": a realistic JSON response the API would return (string)\n' +
+              '- "assistant_response": the assistant\'s final natural-language answer summarizing the result (string)';
+          } else {
+            userPrompt = 'Generate a training example about: "' + topic + '"\n\n' +
+              (resolvedGenInstructions ? 'Instructions: ' + resolvedGenInstructions + '\n\n' : '') +
+              (openapiContext ? 'API Context (for reference):\n' + openapiContext.substring(0, 2000) + '\n\n' : '') +
+              'Return ONLY a JSON object with these fields:\n' +
+              '- "user_message": a realistic user question (string)\n' +
+              '- "assistant_response": a detailed, helpful answer (string)';
           }
 
-          i += batchSize;
+          return self._callLLM([
+            { role: 'system', content: genSysPrompt },
+            { role: 'user', content: userPrompt }
+          ], signal)
+          .then(function(content) {
+            try {
+              // Strip markdown code fences before extracting JSON
+              var stripped = content.replace(/```(?:json)?\s*/gi, '').replace(/```/g, '').trim();
+              var match = stripped.match(/\{[\s\S]*\}/);
+              if (match) {
+                var parsed = JSON.parse(match[0]);
+                var messages = [];
 
-          return Promise.all(batchPromises).then(function(results) {
-            results.forEach(function(r) {
-              if (r) allData.push(r);
-            });
-            self.setState({
-              generatedData: allData.slice(),
-              dataProgress: 'Generating training data (' + Math.min(i, numSamples) + '/' + numSamples + ')...'
-            });
-            return generateBatch();
+                if (includeSystem) {
+                  messages.push({
+                    role: 'system',
+                    content: resolvedOutputSystemPrompt
+                  });
+                }
+
+                messages.push({
+                  role: 'user',
+                  content: parsed.user_message || 'No question generated'
+                });
+
+                if (enableToolCalls && parsed.tool_name) {
+                  // Assistant issues a tool call
+                  var callId = 'call_' + (existingData.length + completed + 1);
+                  messages.push({
+                    role: 'assistant',
+                    content: '',
+                    tool_calls: [{
+                      id: callId,
+                      type: 'function',
+                      function: {
+                        name: parsed.tool_name,
+                        arguments: typeof parsed.tool_arguments === 'string'
+                          ? parsed.tool_arguments
+                          : JSON.stringify(parsed.tool_arguments || {})
+                      }
+                    }]
+                  });
+
+                  // Tool responds
+                  var toolContent = typeof parsed.tool_result === 'string'
+                    ? parsed.tool_result
+                    : JSON.stringify(parsed.tool_result || {});
+                  messages.push({
+                    role: 'tool',
+                    name: parsed.tool_name,
+                    tool_call_id: callId,
+                    content: toolContent
+                  });
+                }
+
+                // Final assistant response
+                messages.push({
+                  role: 'assistant',
+                  content: parsed.assistant_response || 'No answer generated'
+                });
+
+                existingData.push({ messages: messages });
+                self.setState({ generatedData: existingData.slice() });
+              }
+            } catch (e) {
+              console.warn('Failed to parse generated data:', e);
+            }
+            completed++;
+            return generateNext();
+          })
+          .catch(function(err) {
+            if (err.name !== 'AbortError') {
+              console.warn('Generation error for sample ' + idx + ':', err);
+            }
+            completed++;
+            return generateNext();
           });
         }
 
-        generateBatch();
+        generateNext();
       }
 
       handleStop() {
@@ -4209,7 +4199,25 @@
       }
 
       handleClearData() {
-        this.setState({ generatedData: [], dataProgress: '', previewIdx: 0 });
+        this.setState({ generatedData: [], dataProgress: '', inspectIdx: -1 });
+      }
+
+      handleDeleteSample(index) {
+        this.setState(function(prev) {
+          var newData = prev.generatedData.slice();
+          newData.splice(index, 1);
+          var newInspect = prev.inspectIdx;
+          if (newInspect >= newData.length) newInspect = -1;
+          if (newInspect === index) newInspect = -1;
+          else if (newInspect > index) newInspect--;
+          return { generatedData: newData, inspectIdx: newInspect };
+        });
+      }
+
+      handleInspectSample(index) {
+        this.setState(function(prev) {
+          return { inspectIdx: prev.inspectIdx === index ? -1 : index };
+        });
       }
 
       render() {
@@ -4417,10 +4425,12 @@
           }
         }
 
-        // Render preview of selected generated data
-        var previewContent = '';
-        if (s.generatedData.length > 0 && s.previewIdx < s.generatedData.length) {
-          previewContent = JSON.stringify(s.generatedData[s.previewIdx], null, 2);
+        // Get user message summary for sample list
+        function getSampleSummary(sample) {
+          if (!sample || !sample.messages) return 'Empty sample';
+          var userMsg = sample.messages.find(function(m) { return m.role === 'user'; });
+          var text = userMsg ? userMsg.content : 'No user message';
+          return text.length > 80 ? text.substring(0, 80) + '...' : text;
         }
 
         return React.createElement('div', { style: panelStyle },
@@ -4575,17 +4585,6 @@
                   style: smallInputStyle,
                   disabled: isGenerating
                 })
-              ),
-              React.createElement('div', null,
-                React.createElement('label', { style: labelStyle }, 'Batch Size'),
-                React.createElement('input', {
-                  type: 'number',
-                  value: s.batchSize,
-                  min: 1, max: 10,
-                  onChange: function(e) { self.setState({ batchSize: parseInt(e.target.value) || 1 }); },
-                  style: smallInputStyle,
-                  disabled: isGenerating
-                })
               )
             ),
 
@@ -4640,35 +4639,81 @@
             s.dataProgress && React.createElement('div', { style: progressStyle }, s.dataProgress)
           ),
 
-          // ── Section 3: Preview ─────────────────────────────────────────
+          // ── Section 3: Generated Samples List ──────────────────────────
           s.generatedData.length > 0 && React.createElement('div', { style: sectionStyle },
             React.createElement('div', { style: sectionTitleStyle },
-              '👁 Preview (' + (s.previewIdx + 1) + '/' + s.generatedData.length + ')'
+              '📋 Generated Samples (' + s.generatedData.length + ')'
             ),
 
-            React.createElement('div', { style: { display: 'flex', gap: '8px', marginBottom: '8px' } },
-              React.createElement('button', {
-                onClick: function() {
-                  self.setState(function(prev) {
-                    return { previewIdx: Math.max(0, prev.previewIdx - 1) };
-                  });
-                },
-                disabled: s.previewIdx === 0,
-                style: s.previewIdx === 0 ? disabledBtn : secondaryBtn,
-              }, '◀ Prev'),
-              React.createElement('button', {
-                onClick: function() {
-                  self.setState(function(prev) {
-                    return { previewIdx: Math.min(prev.generatedData.length - 1, prev.previewIdx + 1) };
-                  });
-                },
-                disabled: s.previewIdx >= s.generatedData.length - 1,
-                style: s.previewIdx >= s.generatedData.length - 1 ? disabledBtn : secondaryBtn,
-              }, 'Next ▶')
-            ),
+            React.createElement('div', {
+              style: { maxHeight: '500px', overflowY: 'auto' }
+            },
+              s.generatedData.map(function(sample, idx) {
+                var isExpanded = s.inspectIdx === idx;
+                var sampleItemStyle = {
+                  padding: '8px 12px',
+                  border: '1px solid var(--theme-border-color)',
+                  borderRadius: '6px',
+                  marginBottom: '6px',
+                  background: isExpanded ? 'var(--theme-input-bg)' : 'var(--theme-panel-bg)',
+                  fontSize: '12px',
+                };
+                var sampleHeaderStyle = {
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: '8px',
+                  cursor: 'pointer',
+                };
+                var sampleTextStyle = {
+                  flex: 1,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                  color: 'var(--theme-text-primary)',
+                };
+                var smallBtnStyle = {
+                  padding: '3px 8px',
+                  border: '1px solid var(--theme-border-color)',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  fontSize: '11px',
+                  background: 'var(--theme-secondary)',
+                  color: 'var(--theme-text-primary)',
+                  flexShrink: 0,
+                };
+                var deleteBtnStyle = Object.assign({}, smallBtnStyle, {
+                  background: '#dc2626',
+                  color: '#fff',
+                  border: 'none',
+                });
 
-            React.createElement('div', { style: previewStyle },
-              React.createElement('code', null, previewContent)
+                return React.createElement('div', { key: 'sample-' + idx, style: sampleItemStyle },
+                  React.createElement('div', {
+                    style: sampleHeaderStyle,
+                    onClick: function() { self.handleInspectSample(idx); },
+                  },
+                    React.createElement('span', {
+                      style: { color: 'var(--theme-text-secondary)', fontWeight: '500', flexShrink: 0 }
+                    }, '#' + (idx + 1)),
+                    React.createElement('span', { style: sampleTextStyle }, getSampleSummary(sample)),
+                    React.createElement('button', {
+                      onClick: function(e) { e.stopPropagation(); self.handleInspectSample(idx); },
+                      style: smallBtnStyle,
+                      title: isExpanded ? 'Collapse' : 'Inspect',
+                    }, isExpanded ? '▲' : '🔍'),
+                    React.createElement('button', {
+                      onClick: function(e) { e.stopPropagation(); self.handleDeleteSample(idx); },
+                      style: deleteBtnStyle,
+                      title: 'Delete sample',
+                      disabled: isGenerating,
+                    }, '✕')
+                  ),
+                  isExpanded && React.createElement('div', { style: previewStyle },
+                    React.createElement('code', null, JSON.stringify(sample, null, 2))
+                  )
+                );
+              })
             )
           )
         );
