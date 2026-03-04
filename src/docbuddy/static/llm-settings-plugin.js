@@ -4346,7 +4346,7 @@
                 React.createElement('div', {
                   key: 'node-' + node.id,
                   style: { fontWeight: '600', fontSize: '13px', marginTop: '8px', marginBottom: '2px' }
-                }, '## Level ' + depth + ': ' + node.topic)
+                }, node.topic)
               );
             } else if (depth === 2) {
               // Level 2: top-level bullet
