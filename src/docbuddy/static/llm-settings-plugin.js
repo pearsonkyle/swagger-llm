@@ -3394,6 +3394,7 @@
 
         var blocksContainerStyle = {
           flex: 1,
+          minHeight: 0,
           overflowY: 'auto',
           padding: '16px',
           display: 'flex',
@@ -3469,6 +3470,7 @@
                     overflow: 'hidden',
                     transition: 'all 0.2s ease',
                     boxShadow: isActive ? '0 0 0 2px rgba(99,102,241,0.2)' : 'none',
+                    flexShrink: 0,
                   };
 
                   var blockHeaderStyle = {
@@ -3572,6 +3574,7 @@
                         style: {
                           padding: '0',
                           margin: 0,
+                          overflowX: 'auto',
                           cursor: 'pointer',
                           position: 'relative',
                         },
@@ -3607,12 +3610,13 @@
                             overflowX: 'auto',
                             overflowY: 'auto',
                             whiteSpace: 'pre-wrap',
+                            wordBreak: 'break-word',
                             overflowWrap: 'break-word',
                             color: isDone ? '#a5b4fc' : 'var(--theme-text-primary)',
                             lineHeight: '1.6',
                             fontSize: '13px',
                             fontFamily: "'Consolas', 'Monaco', monospace",
-                            maxHeight: '60vh',
+                            maxHeight: '400px',
                             WebkitOverflowScrolling: 'touch',
                           }
                         },

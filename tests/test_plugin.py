@@ -1098,16 +1098,18 @@ def test_workflow_dispatches_streaming_events():
 
 
 def test_workflow_output_scrollable():
-    """Verify workflow code block output is scrollable with responsive max-height."""
+    """Verify workflow code block output is scrollable with fixed max-height."""
     client = TestClient(make_app())
     js_content = client.get("/docbuddy-static/llm-settings-plugin.js").text
 
-    # Should use viewport-relative max height for output blocks
-    assert "maxHeight: '60vh'" in js_content
+    # Should use fixed max height for output blocks (larger than original 300px)
+    assert "maxHeight: '400px'" in js_content
     # Should have proper overflow for scrolling
     assert "overflowY: 'auto'" in js_content
     # Should use overflow-wrap for proper word wrapping
     assert "overflowWrap: 'break-word'" in js_content
+    # Block wrappers should not flex-shrink so blocks container scrolls properly
+    assert "flexShrink: 0" in js_content
 
 
 def test_workflow_mobile_scroll_support():
