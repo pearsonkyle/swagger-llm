@@ -15,26 +15,30 @@ app = FastAPI(
     version="0.4.0",
     description="""
 A demonstration of LLM-enhanced API documentation using [docbuddy](https://github.com/pearsonkyle/docbuddy).
+
+
 ## Features
 - 💬 AI chat assistant with full OpenAPI context
 - 🤖 LLM Settings with local providers (Ollama, LM Studio, vLLM, Custom)
 - 🔗 Tool-calling for API Requests
 - 🎨 Dark/light theme support
-- 📊 Advanced filtering and analytics endpoints
-- 🔗 Dynamic XML/JSON mapping from tool outputs
+
+
 ## Installation
 ```bash
 pip install docbuddy
 ```
+
+
 ## Quick Start
 ```python
 from fastapi import FastAPI
 from docbuddy import setup_docs
+
 app = FastAPI()
 setup_docs(app)  # replaces default /docs
 ```
-### Example
-Use the **Chat** panel to ask questions about these endpoints!
+
 """,
 )
 
