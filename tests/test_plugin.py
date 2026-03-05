@@ -1,11 +1,5 @@
 """Tests for docbuddy package."""
 
-import sys
-import os
-
-# Ensure we can import the source package
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient

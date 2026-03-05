@@ -1,10 +1,10 @@
 """docbuddy: Add an LLM configuration panel to your FastAPI Swagger UI docs."""
 
-from importlib.metadata import version
+from importlib.metadata import version, PackageNotFoundError
 
 try:
     __version__ = version("docbuddy")
-except Exception:
+except PackageNotFoundError:
     __version__ = "unknown"
 
 from .plugin import setup_docs, get_swagger_ui_html

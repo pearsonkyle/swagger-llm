@@ -1,7 +1,7 @@
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 from fastapi import FastAPI, Query, HTTPException
-from fastapi.responses import JSONResponse, PlainTextResponse
-from pydantic import BaseModel, Field, field_validator, model_validator
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 from datetime import date
 import sys
 import os
@@ -93,7 +93,11 @@ async def health():
 
 @app.get("/invoices", tags=["invoices"])
 async def list_invoices(
-    filter: Optional[InvoiceFilter] = None,
+    customer_name: Optional[str] = Query(default=None, min_length=1, description="Filter by customer name (partial match)"),
+    start_date: Optional[date] = Query(default=None, description="Start date for filtering (inclusive)"),
+    end_date: Optional[date] = Query(default=None, description="End date for filtering (inclusive)"),
+    min_total: Optional[float] = Query(default=None, ge=0, description="Minimum total amount"),
+    max_total: Optional[float] = Query(default=None, ge=0, description="Maximum total amount"),
     limit: int = Query(default=10, ge=1, le=100, description="Maximum number of results"),
     offset: int = Query(default=0, ge=0, description="Number of results to skip"),
 ):
@@ -102,32 +106,26 @@ async def list_invoices(
     Supports combined customer name and date range filters for optimized queries.
     Returns total count in X-Total-Count header.
     """
-    if filter is None:
-        filter = InvoiceFilter()
-    
     # Start with all invoices
     filtered_invoices = []
     
     for invoice in invoices:
         # Customer name filter (case-insensitive partial match)
-        if filter.customer_name and filter.customer_name.lower() not in invoice.customer_name.lower():
+        if customer_name and customer_name.lower() not in invoice.customer_name.lower():
             continue
         
-        # Date range validation
-        if filter.start_date and invoice.created_at < filter.start_date:
+        # Date range filtering
+        if start_date and invoice.created_at < start_date:
             continue
         
-        if filter.end_date and invoice.created_at > filter.end_date:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid date range: end_date ({filter.end_date}) is before some invoice dates"
-            )
+        if end_date and invoice.created_at > end_date:
+            continue
         
-        # Total amount range validation
-        if filter.min_total is not None and invoice.total_amount < filter.min_total:
+        # Total amount range filtering
+        if min_total is not None and invoice.total_amount < min_total:
             continue
             
-        if filter.max_total is not None and invoice.total_amount > filter.max_total:
+        if max_total is not None and invoice.total_amount > max_total:
             continue
         
         filtered_invoices.append(invoice)
@@ -137,8 +135,8 @@ async def list_invoices(
     paginated_invoices = filtered_invoices[offset:offset + limit]
     
     # Return JSON response with total count header
-    return PlainTextResponse(
-        content=str(paginated_invoices),
+    return JSONResponse(
+        content=[inv.model_dump(mode="json") for inv in paginated_invoices],
         headers={"X-Total-Count": str(total_count)}
     )
 
@@ -176,10 +174,7 @@ async def get_invoice(invoice_id: int):
         if invoice.id == invoice_id:
             return invoice
     
-    return JSONResponse(
-        status_code=404,
-        content={"error": "Invoice not found"}
-    )
+    raise HTTPException(status_code=404, detail="Invoice not found")
 
 # ── Error handlers ───────────────────────────────────────────────────────────
 @app.exception_handler(502)
@@ -197,4 +192,4 @@ async def proxy_error_handler(request, exc):
 # ── Main entry point for development ────────────────────────────────────────
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run(app, host="127.0.0.1", port=8000, reload=True)

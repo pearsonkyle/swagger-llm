@@ -12,11 +12,8 @@
   --theme-text-primary: #1a202c;
   --theme-text-secondary: #4a5568;
   --theme-input-bg: #f7fafc;
-  --theme-provider-openai: #10a37f;
-  --theme-provider-anthropic: #d97757;
   --theme-provider-ollama: #2b90d8;
   --theme-provider-vllm: #facc15;
-  --theme-provider-azure: #0078d4;
 }
 
 body {

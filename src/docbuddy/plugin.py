@@ -29,6 +29,8 @@ def get_swagger_ui_html(
     title: str,
     swagger_js_url: str = "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.18.2/swagger-ui-bundle.js",
     swagger_css_url: str = "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.18.2/swagger-ui.css",
+    swagger_js_sri: str = "sha384-NXtFPpN61oWCuN4D42K6Zd5Rt2+uxeIT36R7kpXBuY9tLnZorzrJ4ykpqwJfgjpZ",
+    swagger_css_sri: str = "sha384-rcbEi6xgdPk0iWkAQzT2F3FeBJXdG+ydrawGlfHAFIZG7wU6aKbQaRewysYpmrlW",
     theme_css_url: str = "/docbuddy-static/themes/light-theme.css",
     debug: bool = False,
 ) -> HTMLResponse:
@@ -42,6 +44,8 @@ def get_swagger_ui_html(
         title: Page title.
         swagger_js_url: CDN URL for Swagger UI JS.
         swagger_css_url: CDN URL for the Swagger UI CSS.
+        swagger_js_sri: SRI hash for the Swagger UI JS bundle.
+        swagger_css_sri: SRI hash for the Swagger UI CSS.
         theme_css_url: URL for the theme CSS file.
         debug: If True, disables template caching for development.
     """
@@ -58,6 +62,8 @@ def get_swagger_ui_html(
         openapi_url=openapi_url,
         swagger_js_url=swagger_js_url,
         swagger_css_url=swagger_css_url,
+        swagger_js_sri=swagger_js_sri,
+        swagger_css_sri=swagger_css_sri,
         theme_css_url=theme_css_url,
     )
     return HTMLResponse(html)
@@ -71,6 +77,8 @@ def setup_docs(
     openapi_url: Optional[str] = None,
     swagger_js_url: str = "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.18.2/swagger-ui-bundle.js",
     swagger_css_url: str = "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.18.2/swagger-ui.css",
+    swagger_js_sri: str = "sha384-NXtFPpN61oWCuN4D42K6Zd5Rt2+uxeIT36R7kpXBuY9tLnZorzrJ4ykpqwJfgjpZ",
+    swagger_css_sri: str = "sha384-rcbEi6xgdPk0iWkAQzT2F3FeBJXdG+ydrawGlfHAFIZG7wU6aKbQaRewysYpmrlW",
     theme_css_url: str = "/docbuddy-static/themes/light-theme.css",
     debug: bool = False,
 ) -> None:
@@ -89,6 +97,8 @@ def setup_docs(
         openapi_url: URL of the OpenAPI JSON schema (defaults to ``app.openapi_url``).
         swagger_js_url: CDN URL for the Swagger UI JS bundle.
         swagger_css_url: CDN URL for the Swagger UI CSS.
+        swagger_js_sri: SRI hash for the Swagger UI JS bundle.
+        swagger_css_sri: SRI hash for the Swagger UI CSS.
         debug: If True, enables debug mode with template auto-reload (default False).
     """
     resolved_title = title or f"{app.title} – LLM Docs"
@@ -148,6 +158,8 @@ def setup_docs(
             title=resolved_title,
             swagger_js_url=swagger_js_url,
             swagger_css_url=swagger_css_url,
+            swagger_js_sri=swagger_js_sri,
+            swagger_css_sri=swagger_css_sri,
             theme_css_url=theme_css_url,
             debug=debug,
         )

@@ -34,8 +34,6 @@ dependencies = [
 dev = [
     "uvicorn[standard]>=0.20.0",
     "pytest>=7.0.0",
-    "anyio[trio]>=3.0.0",
-    "pytest-anyio>=0.0.0",
     "httpx>=0.23.0",
 ]
 
@@ -47,4 +45,3 @@ Repository = "https://github.com/pearsonkyle/docbuddy"
 packages = ["src/docbuddy"]
 
 [tool.pytest.ini_options]
-asyncio_mode = "auto"

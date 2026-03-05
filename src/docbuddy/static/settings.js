@@ -25,7 +25,6 @@
           theme: DB.DEFAULT_STATE.theme,
           customColors: DB.DEFAULT_STATE.customColors,
           connectionStatus: "disconnected",
-          settingsOpen: false,
           lastError: "",
           availableModels: [],
           enableTools: ts.enableTools || false,
@@ -33,8 +32,6 @@
           toolApiKey: ts.apiKey || '',
         };
         this._debouncedSave = DB.debounce(this._saveSettings.bind(this), 300);
-        this.handleTestConnection = this.handleTestConnection.bind(this);
-        this.toggleOpen = this.toggleOpen.bind(this);
         this.handleProviderChange = this.handleProviderChange.bind(this);
         this.handleBaseUrlChange = this.handleBaseUrlChange.bind(this);
         this.handleApiKeyChange = this.handleApiKeyChange.bind(this);
@@ -45,6 +42,7 @@
         this.handleEnableToolsChange = this.handleEnableToolsChange.bind(this);
         this.handleAutoExecuteChange = this.handleAutoExecuteChange.bind(this);
         this.handleToolApiKeyChange = this.handleToolApiKeyChange.bind(this);
+        this.handleTestConnection = this.handleTestConnection.bind(this);
       }
 
       _saveSettings() {
@@ -90,7 +88,7 @@
           apiKey: this.state.apiKey,
           modelId: this.state.modelId,
         };
-        DB.saveToStorage(settings);
+        DB.saveToStorage(Object.assign({}, DB.loadFromStorage(), settings));
         self.setState({ connectionStatus: "connecting", lastError: "" });
         DB.dispatchAction(system, 'setConnectionStatus', "connecting");
 
@@ -130,11 +128,11 @@
               DB.dispatchAction(system, 'setModelId', models[0]);
             }
             self.setState(newState);
-            DB.saveToStorage({
+            DB.saveToStorage(Object.assign({}, DB.loadFromStorage(), {
               baseUrl: self.state.baseUrl,
               apiKey: self.state.apiKey,
               modelId: newState.modelId || self.state.modelId,
-            });
+            }));
             DB.dispatchAction(system, 'setConnectionStatus', "connected");
           })
           .catch(function (err) {
@@ -142,12 +140,6 @@
             self.setState({ connectionStatus: "error", lastError: errorMsg });
             DB.dispatchAction(system, 'setConnectionStatus', "error");
           });
-      }
-
-      toggleOpen() {
-        var newValue = !this.state.settingsOpen;
-        this.setState({ settingsOpen: newValue });
-        DB.dispatchAction(system, 'setSettingsOpen', newValue);
       }
 
       handleProviderChange(e) {

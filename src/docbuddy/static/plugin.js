@@ -215,8 +215,10 @@
             React.createElement(WorkflowPanel, null)
           ),
 
-          // LLM Settings tab content
-          activeTab === "settings" ? React.createElement(LLMSettingsPanel, null) : null
+          // LLM Settings tab content (always mounted, hidden via CSS to preserve state across tab switches)
+          React.createElement("div", { style: { display: activeTab === "settings" ? "block" : "none", height: "100%", overflow: "auto" } },
+            React.createElement(LLMSettingsPanel, null)
+          )
         )
       );
     }

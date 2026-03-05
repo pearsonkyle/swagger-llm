@@ -19,7 +19,6 @@
           isTyping: false,
           isProcessingToolCall: false,
           chatHistory: DB.loadChatHistory(),
-          schemaLoading: false,
           copiedId: null,
           pendingToolCall: null,
           editMethod: 'GET',
@@ -45,7 +44,6 @@
         this.sendToolResult = this.sendToolResult.bind(this);
         this.renderToolCallPanel = this.renderToolCallPanel.bind(this);
         this._copyTimeoutId = null;
-        this._fetchAbortController = null;
 
         DB.initMarked();
       }
@@ -59,10 +57,6 @@
           this._currentCancelToken.abort();
           this._currentCancelToken = null;
         }
-        if (this._fetchAbortController) {
-          this._fetchAbortController.abort();
-          this._fetchAbortController = null;
-        }
         if (this._copyTimeoutId) {
           clearTimeout(this._copyTimeoutId);
           this._copyTimeoutId = null;
@@ -75,14 +69,7 @@
           if (schema) {
             DB.dispatchAction(system, 'setOpenApiSchema', schema);
           }
-          self.setState({ schemaLoading: false });
         });
-        if (DB._cachedOpenapiSchema) return;
-        if (this._fetchAbortController) {
-          this._fetchAbortController.abort();
-        }
-        self._fetchAbortController = new AbortController();
-        self.setState({ schemaLoading: true });
       }
 
       addMessage(msg) {
@@ -150,7 +137,7 @@
 
         var url = s.editPath;
 
-        if (!url || !/^\/[^\/\\]/.test(url)) {
+        if (!url || !/^\/[^\\]?/.test(url)) {
           console.error('[Tool Call] Rejected non-relative path:', url);
           var rejectObj = { status: 0, statusText: 'Blocked', body: 'Tool call path must be a relative URL starting with /' };
           self.setState({ toolCallResponse: rejectObj });
@@ -196,6 +183,14 @@
         };
 
         if (hasBody) {
+          try {
+            JSON.parse(s.editBody);
+          } catch (e) {
+            var parseErrObj = { status: 0, statusText: 'Invalid JSON', body: 'Request body is not valid JSON: ' + e.message };
+            self.setState({ toolCallResponse: parseErrObj });
+            self.sendToolResult(parseErrObj);
+            return;
+          }
           fetchOpts.body = s.editBody;
         }
 
@@ -688,23 +683,6 @@
           !isUser &&
           idx === chatHistory.length - 1 &&
           msg.role === 'assistant';
-
-        var renderMessageHeader = function(label, showTimestamp) {
-          return React.createElement(
-            "div",
-            { className: "llm-chat-message-header" },
-            React.createElement("span", {
-              style: {
-                fontSize: "13px",
-                fontWeight: "600",
-                color: isToolCallMsg ? "#8b5cf6" : (isTool ? "var(--theme-text-primary)" : undefined)
-              }
-            }, label),
-            showTimestamp && self.state.copiedId === msg.messageId
-              ? React.createElement("span", { style: { fontSize: "11px", color: "#10b981", fontWeight: "500" } }, "✓ Copied")
-              : null
-          );
-        };
 
         if (isToolCallMsg) {
           var toolArgs = msg._toolArgs || {};

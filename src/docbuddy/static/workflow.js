@@ -287,39 +287,48 @@
                           return accumulatedToolCalls[k];
                         });
                         if (toolCallsList.length > 0) {
-                          executeToolCall(toolCallsList[0], toolCallsList, function(toolOutput) {
-                            var firstToolCall = toolCallsList[0];
-
-                            blockMessages.push({
-                              role: 'assistant',
-                              content: null,
-                              tool_calls: toolCallsList.map(function(tc) {
-                                return { id: tc.id, type: 'function', function: { name: tc.function.name, arguments: tc.function.arguments } };
-                              })
-                            });
-
-                            blockMessages.push({
-                              role: 'tool',
-                              tool_call_id: firstToolCall.id,
-                              content: toolOutput
-                            });
-
-                            var tcArgs = {};
-                            try { tcArgs = JSON.parse(firstToolCall.function.arguments || '{}'); } catch (e) {}
-                            var curlCmd = DB.buildCurlCommand(
-                              tcArgs.method || 'GET',
-                              tcArgs.path || '',
-                              tcArgs.query_params || {},
-                              tcArgs.path_params || {},
-                              tcArgs.body || {}
-                            );
-                            accumulated += '\n\n[Tool Call]\n' + curlCmd + '\n\n[Tool Result]\n' + toolOutput;
-                            var currentBlocks2 = self.state.blocks.slice();
-                            currentBlocks2[idx] = Object.assign({}, currentBlocks2[idx], { output: accumulated });
-                            self.setState({ blocks: currentBlocks2 });
-
-                            finishBlock(accumulated, blockMessages);
+                          // Push the assistant message with all tool calls
+                          blockMessages.push({
+                            role: 'assistant',
+                            content: null,
+                            tool_calls: toolCallsList.map(function(tc) {
+                              return { id: tc.id, type: 'function', function: { name: tc.function.name, arguments: tc.function.arguments } };
+                            })
                           });
+
+                          // Execute all tool calls sequentially
+                          var toolIdx = 0;
+                          function executeNextToolCall() {
+                            if (toolIdx >= toolCallsList.length) {
+                              var currentBlocks2 = self.state.blocks.slice();
+                              currentBlocks2[idx] = Object.assign({}, currentBlocks2[idx], { output: accumulated });
+                              self.setState({ blocks: currentBlocks2 });
+                              finishBlock(accumulated, blockMessages);
+                              return;
+                            }
+                            var currentTc = toolCallsList[toolIdx];
+                            executeToolCall(currentTc, toolCallsList, function(toolOutput) {
+                              blockMessages.push({
+                                role: 'tool',
+                                tool_call_id: currentTc.id,
+                                content: toolOutput
+                              });
+
+                              var tcArgs = {};
+                              try { tcArgs = JSON.parse(currentTc.function.arguments || '{}'); } catch (e) {}
+                              var curlCmd = DB.buildCurlCommand(
+                                tcArgs.method || 'GET',
+                                tcArgs.path || '',
+                                tcArgs.query_params || {},
+                                tcArgs.path_params || {},
+                                tcArgs.body || {}
+                              );
+                              accumulated += '\n\n[Tool Call]\n' + curlCmd + '\n\n[Tool Result]\n' + toolOutput;
+                              toolIdx++;
+                              executeNextToolCall();
+                            });
+                          }
+                          executeNextToolCall();
                           return;
                         }
                       }
@@ -335,8 +344,15 @@
               return processChunk();
             })
             .catch(function(err) {
+              self._abortController = null;
               if (err && err.name === 'AbortError') {
-                self._abortController = null;
+                // On abort, mark the block as done so it doesn't stay stuck in 'running'
+                var currentBlocks = self.state.blocks.slice();
+                currentBlocks[idx] = Object.assign({}, currentBlocks[idx], {
+                  output: accumulated || '(aborted)',
+                  status: 'done'
+                });
+                self.setState({ blocks: currentBlocks, running: false, currentBlockIdx: -1 });
                 return;
               }
               finishBlock('Error: ' + (err && err.message ? err.message : 'Request failed'), blockMessages);
@@ -348,7 +364,7 @@
             var method = args.method || 'GET';
             var url = args.path || '';
 
-            if (!url || !/^\/[^\/\\]/.test(url)) {
+            if (!url || !/^\/[^\\]?/.test(url)) {
               callback('Error: Tool call path must be a relative URL starting with /');
               return;
             }
@@ -410,9 +426,14 @@
 
           function finishBlock(output, historyMessages) {
             if (historyMessages && historyMessages.length > 0) {
-              if (accumulated) {
-                conversationHistory.push({ role: 'assistant', content: accumulated });
-              }
+              // Include all tool call messages in conversation history
+              historyMessages.forEach(function(msg) {
+                conversationHistory.push(msg);
+              });
+              // After tool messages, add an assistant summary so the next block's
+              // "user" message doesn't immediately follow a "tool" role (which
+              // causes HTTP 400 from most LLM providers).
+              conversationHistory.push({ role: 'assistant', content: output || accumulated || '' });
             } else {
               conversationHistory.push({ role: 'assistant', content: output || accumulated || '' });
             }

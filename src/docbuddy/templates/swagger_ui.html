@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
   <head>
     <title>{{ title }}</title>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <link rel="stylesheet" type="text/css" href="{{ swagger_css_url }}" />
+    <link rel="stylesheet" type="text/css" href="{{ swagger_css_url }}" integrity="{{ swagger_css_sri }}" crossorigin="anonymous" />
     <link rel="stylesheet" type="text/css" href="{{ theme_css_url }}" />
     <!-- FOUC fix: Apply default theme immediately before page renders -->
     <script>
@@ -33,7 +33,7 @@
 
     <script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.4/dist/purify.min.js" integrity="sha384-eEu5CTj3qGvu9PdJuS+YlkNi7d2XxQROAFYOr59zgObtlcux1ae1Il3u7jvdCSWu" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/marked@9.1.6/marked.min.js" integrity="sha384-odPBjvtXVM/5hOYIr3A1dB+flh0c3wAT3bSesIOqEGmyUA4JoKf/YTWy0XKOYAY7" crossorigin="anonymous"></script>
-    <script src="{{ swagger_js_url }}"></script>
+    <script src="{{ swagger_js_url }}" integrity="{{ swagger_js_sri }}" crossorigin="anonymous"></script>
     <script src="/docbuddy-static/core.js"></script>
     <script src="/docbuddy-static/chat.js"></script>
     <script src="/docbuddy-static/settings.js"></script>
@@ -53,27 +53,14 @@
         margin-right: 8px;
         color: #fff;
       }
-      .llm-provider-ollama { background-color: #2b90d8; }
-      .llm-provider-lmstudio { background-color: #6366f1; }
-      .llm-provider-vllm { background-color: #facc15; color: #1a1a1a; }
+      .llm-provider-ollama { background-color: var(--theme-provider-ollama, #2b90d8); }
+      .llm-provider-vllm { background-color: var(--theme-provider-vllm, #facc15); color: #1a1a1a; }
     </style>
 
     <script>
-      // Read LLM settings from localStorage (set by the LLMSettingsPanel)
-      var STORAGE_KEY = "docbuddy-settings";
-
-      function getLLMSettings() {
-        try {
-          var raw = localStorage.getItem(STORAGE_KEY);
-          return raw ? JSON.parse(raw) : {};
-        } catch (e) {
-          return {};
-        }
-      }
-
-      window.onload = function () {
+      window.addEventListener('load', function () {
         var ui = SwaggerUIBundle({
-          url: "{{ openapi_url }}",
+          url: {{ openapi_url|tojson }},
           dom_id: "#swagger-ui",
           presets: [SwaggerUIBundle.presets.apis, SwaggerUIBundle.SwaggerUIStandalonePreset],
           plugins: [
@@ -83,7 +70,7 @@
           layout: "LLMDocsLayout",
         });
         window.ui = ui;
-      };
+      });
     </script>
   </body>
 </html>

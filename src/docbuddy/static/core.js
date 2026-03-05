@@ -8,26 +8,27 @@
 
   // ── System Prompt Preset Configuration (load from JSON) ───────────────────
   var SYSTEM_PROMPT_CONFIG = null;
+  var _systemPromptConfigPromise = null;
 
   function loadSystemPromptConfig() {
     if (SYSTEM_PROMPT_CONFIG) return SYSTEM_PROMPT_CONFIG;
 
-    try {
-      var xhr = new XMLHttpRequest();
-      xhr.open('GET', '/docbuddy-static/system-prompt-config.json', true);
-      xhr.timeout = 3000;
-      xhr.onload = function() {
-        if (xhr.status === 200) {
-          try {
-            SYSTEM_PROMPT_CONFIG = JSON.parse(xhr.responseText);
-          } catch (e) {
-            console.error('Failed to parse system-prompt-config.json:', e);
-          }
-        }
-      };
-      xhr.send();
-    } catch (e) {
-      console.error('Failed to load system-prompt-config.json:', e);
+    // Start async fetch if not already in progress
+    if (!_systemPromptConfigPromise) {
+      _systemPromptConfigPromise = fetch('/docbuddy-static/system-prompt-config.json')
+        .then(function(res) {
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          return res.json();
+        })
+        .then(function(data) {
+          SYSTEM_PROMPT_CONFIG = data;
+          return data;
+        })
+        .catch(function(err) {
+          console.error('Failed to load system-prompt-config.json:', err);
+          _systemPromptConfigPromise = null;
+          return null;
+        });
     }
 
     return {
@@ -36,6 +37,19 @@
     };
   }
   DocBuddy.loadSystemPromptConfig = loadSystemPromptConfig;
+
+  /**
+   * Returns a Promise that resolves to the system prompt config.
+   * Use this instead of loadSystemPromptConfig() when you need the actual loaded data.
+   */
+  function ensureSystemPromptConfig() {
+    if (SYSTEM_PROMPT_CONFIG) return Promise.resolve(SYSTEM_PROMPT_CONFIG);
+    if (_systemPromptConfigPromise) return _systemPromptConfigPromise;
+    // Kick off loading
+    loadSystemPromptConfig();
+    return _systemPromptConfigPromise || Promise.resolve(null);
+  }
+  DocBuddy.ensureSystemPromptConfig = ensureSystemPromptConfig;
 
   // ── Get system prompt for a preset ────────────────────────────────────────
   function getSystemPromptForPreset(presetName, openapiSchema) {
@@ -237,11 +251,12 @@
           if (props && Object.keys(props).length > 0) {
             lines.push('');
             lines.push('**Properties:**');
+            var schemaRequired = schemaDef.required || [];
             Object.keys(props).slice(0, 10).forEach(function(propName) {
               var propDef = props[propName];
               if (typeof propDef !== 'object') return;
               var ptype = propDef.type || 'any';
-              var preq = propDef.required ? '[required]' : '[optional]';
+              var preq = schemaRequired.indexOf(propName) >= 0 ? '[required]' : '[optional]';
               var pdesc = propDef.description || '';
               lines.push('- `' + propName + '` (' + ptype + ', ' + preq + '): ' + pdesc);
             });
@@ -256,7 +271,7 @@
 
   // ── Build curl command from tool call arguments ───────────────────────────
   function shellEscape(val) {
-    return String(val).replace(/'/g, "'\\''");
+    return String(val).replace(/'/g, "'\\''").replace(/\$/g, '\\$').replace(/`/g, '\\`').replace(/\\/g, '\\\\').replace(/!/g, '\\!');
   }
 
   function buildCurlCommand(method, path, queryParams, pathParams, body) {
@@ -363,7 +378,7 @@
 
   // ── Parse Markdown safely ─────────────────────────────────────────────────
   function _escapeHtml(text) {
-    return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>');
+    return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/\n/g, '<br>');
   }
 
   function parseMarkdown(text) {
@@ -595,9 +610,6 @@
   var SET_TEMPERATURE = "LLM_SET_TEMPERATURE";
   var SET_CONNECTION_STATUS = "LLM_SET_CONNECTION_STATUS";
   var SET_PROVIDER = "LLM_SET_PROVIDER";
-  var SET_SETTINGS_OPEN = "LLM_SET_SETTINGS_OPEN";
-  var ADD_CHAT_MESSAGE = "LLM_ADD_CHAT_MESSAGE";
-  var CLEAR_CHAT_HISTORY = "LLM_CLEAR_CHAT_HISTORY";
   var SET_OPENAPI_SCHEMA = "LLM_SET_OPENAPI_SCHEMA";
   var SET_THEME = "LLM_SET_THEME";
   var SET_CUSTOM_COLOR = "LLM_SET_CUSTOM_COLOR";
@@ -619,7 +631,6 @@
     temperature: storedSettings.temperature != null ? storedSettings.temperature : 0.7,
     provider: storedSettings.provider || "ollama",
     connectionStatus: "disconnected",
-    settingsOpen: false,
     chatHistory: loadChatHistory(),
     lastError: "",
     theme: storedTheme.theme || "light",
@@ -688,18 +699,6 @@
           provider: action.payload,
           baseUrl: provider.url
         });
-      case SET_SETTINGS_OPEN:
-        return Object.assign({}, state, { settingsOpen: action.payload });
-      case ADD_CHAT_MESSAGE:
-        var existingHistory = state.chatHistory;
-        var newHistory = Array.isArray(existingHistory)
-          ? existingHistory.concat([action.payload])
-          : [action.payload];
-        saveChatHistory(newHistory);
-        return Object.assign({}, state, { chatHistory: newHistory });
-      case CLEAR_CHAT_HISTORY:
-        saveChatHistory([]);
-        return Object.assign({}, state, { chatHistory: [] });
       case SET_OPENAPI_SCHEMA:
         return Object.assign({}, state, { openapiSchema: action.payload });
       case SET_THEME:
@@ -734,9 +733,6 @@
     setTemperature: function (value) { return { type: SET_TEMPERATURE, payload: value }; },
     setConnectionStatus: function (value) { return { type: SET_CONNECTION_STATUS, payload: value }; },
     setProvider: function (value) { return { type: SET_PROVIDER, payload: value }; },
-    setSettingsOpen: function (value) { return { type: SET_SETTINGS_OPEN, payload: value }; },
-    addChatMessage: function (message) { return { type: ADD_CHAT_MESSAGE, payload: message }; },
-    clearChatHistory: function () { return { type: CLEAR_CHAT_HISTORY }; },
     setOpenApiSchema: function (schema) { return { type: SET_OPENAPI_SCHEMA, payload: schema }; },
     setTheme: function (value) { return { type: SET_THEME, payload: value }; },
     setCustomColor: function (value) { return { type: SET_CUSTOM_COLOR, payload: value }; },
@@ -752,7 +748,6 @@
     getTemperature: function (state) { return state.temperature; },
     getConnectionStatus: function (state) { return state.connectionStatus; },
     getProvider: function (state) { return state.provider; },
-    getSettingsOpen: function (state) { return state.settingsOpen; },
     getChatHistory: function (state) { return state.chatHistory || []; },
     getOpenApiSchema: function (state) { return state.openapiSchema; },
     getLastError: function (state) { return state.lastError; },
