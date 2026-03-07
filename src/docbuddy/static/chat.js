@@ -140,6 +140,7 @@
 
         var url = s.editPath;
 
+        try { url = decodeURIComponent(url); } catch (e) {}
         if (!url || !/^\//.test(url) || /\.\./.test(url)) {
           console.error('[Tool Call] Rejected invalid path:', url);
           var rejectObj = { status: 0, statusText: 'Blocked', body: 'Tool call path must be a relative URL starting with / and must not contain ".."' };
