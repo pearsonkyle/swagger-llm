@@ -61,3 +61,6 @@ dependencies = [
 format = "pre-commit run --all-files"
 lint = "pre-commit run --all-files"
 test = "pytest tests/ -v"
+
+[tool.ruff]
+per-file-ignores = { "examples/demo_server.py" = ["E402"] }
