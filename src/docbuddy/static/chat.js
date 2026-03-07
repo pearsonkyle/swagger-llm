@@ -117,9 +117,9 @@
         var executedArgs = {
           method: s.editMethod || 'GET',
           path: s.editPath || '',
-          query_params: JSON.parse(s.editQueryParams || '{}'),
-          path_params: JSON.parse(s.editPathParams || '{}'),
         };
+        try { executedArgs.query_params = JSON.parse(s.editQueryParams || '{}'); } catch (e) { executedArgs.query_params = {}; }
+        try { executedArgs.path_params = JSON.parse(s.editPathParams || '{}'); } catch (e) { executedArgs.path_params = {}; }
 
         if (s.editMethod === 'POST' || s.editMethod === 'PUT' || s.editMethod === 'PATCH') {
           try { executedArgs.body = JSON.parse(s.editBody || '{}'); } catch (e) { executedArgs.body = {}; }

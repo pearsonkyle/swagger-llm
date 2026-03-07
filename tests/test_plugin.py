@@ -620,18 +620,20 @@ def test_public_api_exports():
     assert "get_swagger_ui_html" in public_api
 
 
-def test_no_httpx_dependency():
-    """Test that httpx is not used in client-side JavaScript (middleware uses server-side proxy)."""
+def test_httpx_used_for_server_side_proxy():
+    """Test that httpx is used in the server-side proxy middleware (not in client JS)."""
     from docbuddy import plugin
-
-    # The plugin module now uses httpx for the LLMToolCallProxyMiddleware
-    # but it should NOT be imported in client-side code
     import inspect
 
     source = inspect.getsource(plugin)
 
-    # httpx is used in middleware, which is acceptable for server-side proxy
-    assert "httpx" in source  # Now expected for server-side proxy
+    # httpx is expected in the server-side LLMToolCallProxyMiddleware
+    assert "httpx" in source
+
+    # Client-side JS should NOT reference httpx
+    client = TestClient(make_app())
+    js_content = get_all_plugin_js(client)
+    assert "httpx" not in js_content
 
 
 # ── Edge case tests ────────────────────────────────────────────────────────────
@@ -938,8 +940,9 @@ def test_tool_call_post_content_type():
 
     js_content = get_all_plugin_js(client)
 
-    # handleExecuteToolCall should set Content-Type for body-bearing methods
-    assert "Content-Type" in js_content
+    # The proxy fetch should explicitly set Content-Type: application/json
+    assert "'Content-Type': 'application/json'" in js_content
+    assert "/docbuddy-proxy/tool-call" in js_content
     # Body should be included for POST, PUT, and PATCH
     assert (
         "s.editMethod === 'POST' || s.editMethod === 'PUT' || s.editMethod === 'PATCH'"
@@ -1143,6 +1146,84 @@ def test_workflow_mobile_scroll_support():
 
     # Should have webkit touch scrolling for mobile
     assert "WebkitOverflowScrolling: 'touch'" in js_content
+
+
+# ── Proxy security tests ─────────────────────────────────────────────────────
+
+
+def test_proxy_rejects_path_traversal():
+    """Proxy must reject paths containing '..'."""
+    client = TestClient(make_app())
+    response = client.post(
+        "/docbuddy-proxy/tool-call",
+        json={"method": "GET", "path": "/../etc/passwd"},
+    )
+    assert response.status_code == 400
+    assert "traversal" in response.json()["error"].lower()
+
+
+def test_proxy_rejects_absolute_url():
+    """Proxy must reject absolute URLs in the path field."""
+    client = TestClient(make_app())
+    response = client.post(
+        "/docbuddy-proxy/tool-call",
+        json={"method": "GET", "path": "https://evil.example.com/data"},
+    )
+    assert response.status_code == 400
+
+
+def test_proxy_rejects_no_leading_slash():
+    """Proxy must reject paths that do not start with '/'."""
+    client = TestClient(make_app())
+    response = client.post(
+        "/docbuddy-proxy/tool-call",
+        json={"method": "GET", "path": "relative/path"},
+    )
+    assert response.status_code == 400
+
+
+def test_proxy_rejects_self_targeting():
+    """Proxy must reject paths that target /docbuddy-proxy/ to prevent recursion."""
+    client = TestClient(make_app())
+    response = client.post(
+        "/docbuddy-proxy/tool-call",
+        json={"method": "POST", "path": "/docbuddy-proxy/tool-call"},
+    )
+    assert response.status_code == 400
+    assert "itself" in response.json()["error"].lower()
+
+
+def test_proxy_rejects_invalid_method():
+    """Proxy must reject HTTP methods outside the allowed set."""
+    client = TestClient(make_app())
+    response = client.post(
+        "/docbuddy-proxy/tool-call",
+        json={"method": "TRACE", "path": "/openapi.json"},
+    )
+    assert response.status_code == 400
+    assert "method" in response.json()["error"].lower()
+
+
+def test_proxy_rejects_invalid_json_body():
+    """Proxy must return 400 when the request body is not valid JSON."""
+    client = TestClient(make_app())
+    response = client.post(
+        "/docbuddy-proxy/tool-call",
+        content=b"not json",
+        headers={"Content-Type": "application/json"},
+    )
+    assert response.status_code == 400
+
+
+def test_proxy_rejects_non_dict_headers():
+    """Proxy must return 400 when headers field is not a JSON object."""
+    client = TestClient(make_app())
+    response = client.post(
+        "/docbuddy-proxy/tool-call",
+        json={"method": "GET", "path": "/openapi.json", "headers": ["bad"]},
+    )
+    assert response.status_code == 400
+    assert "headers" in response.json()["error"].lower()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

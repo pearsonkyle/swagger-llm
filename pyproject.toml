@@ -58,6 +58,11 @@ dependencies = [
     "mypy",
 ]
 
+[tool.ruff]
+exclude = [
+    "examples/*",
+]
+
 [tool.hatch.envs.default.scripts]
 format = "pre-commit run --all-files"
 lint = "pre-commit run --all-files"

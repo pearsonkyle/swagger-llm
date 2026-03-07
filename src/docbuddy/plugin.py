@@ -1,7 +1,10 @@
 """Core plugin logic: functions to mount the custom LLM-enhanced Swagger UI docs."""
 
+import httpx
+import json
 import re
 import threading
+import urllib.parse
 import weakref
 from pathlib import Path
 from typing import Optional
@@ -45,7 +48,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "style-src 'self' 'unsafe-inline' cdn.jsdelivr.net; "
             "img-src 'self' data:; "
             "font-src 'self' data:; "
-            f"connect-src 'self' {request.url.hostname}:* http://localhost:* https://*;"
+            f"connect-src 'self' {request.url.hostname}:* http://localhost:* https:;"
         )
 
         response.headers["Content-Security-Policy"] = csp
@@ -272,22 +275,27 @@ class LLMToolCallProxyMiddleware(BaseHTTPMiddleware):
                 status_code=400, content={"error": "Path traversal detected"}
             )
 
-        # Normalize the path (remove duplicate slashes)
-        url = re.sub(r"/+", "/", url)
-
-        # Only allow same-origin requests to prevent SSRF
-        # The URL should be relative, so we prepend the origin
-        full_url = f"{request.url.scheme}://{request.url.hostname}{url}"
-
-        # Additional validation: ensure no scheme in the path
+        # Ensure no scheme in the path (must be relative)
         if "://" in url or url.startswith("//"):
             return JSONResponse(
                 status_code=400, content={"error": "Absolute URLs not allowed"}
             )
 
-        # Build query string
-        import urllib.parse
+        # Block recursive proxy calls to prevent resource exhaustion
+        if url.startswith("/docbuddy-proxy/"):
+            return JSONResponse(
+                status_code=400,
+                content={"error": "Proxy endpoint cannot target itself"},
+            )
 
+        # Normalize the path (remove duplicate slashes)
+        url = re.sub(r"/+", "/", url)
+
+        # Only allow same-origin requests to prevent SSRF
+        # Use netloc (host:port) to preserve non-default ports
+        full_url = f"{request.url.scheme}://{request.url.netloc}{url}"
+
+        # Build query string
         if query_params:
             qs = urllib.parse.urlencode(query_params, doseq=True)
             full_url += f"?{qs}"
@@ -308,26 +316,30 @@ class LLMToolCallProxyMiddleware(BaseHTTPMiddleware):
         # Prepare headers for the proxied request
         proxy_headers = {"Content-Type": "application/json"}
 
-        # Copy authorization if provided (for target API authentication)
-        if "Authorization" in headers:
-            proxy_headers["Authorization"] = headers["Authorization"]
+        # Validate and copy authorization header
+        if headers is None:
+            headers = {}
+        if not isinstance(headers, dict):
+            return JSONResponse(
+                status_code=400,
+                content={"error": "Invalid headers format; expected a JSON object"},
+            )
+        auth_value = headers.get("Authorization")
+        if isinstance(auth_value, str):
+            proxy_headers["Authorization"] = auth_value
 
         # Add body only for requests that support it
-        import httpx
-
         request_kwargs = {
             "method": method,
             "url": full_url,
             "headers": proxy_headers,
-            "follow_redirects": True,
+            "follow_redirects": False,
             "timeout": 30.0,
         }
 
-        if request_body and method in {"POST", "PUT", "PATCH"}:
+        if request_body is not None and method in {"POST", "PUT", "PATCH"}:
             try:
                 # Validate body is JSON-serializable
-                import json
-
                 json.dumps(request_body)  # Test serialization
                 request_kwargs["json"] = request_body
             except Exception as e:

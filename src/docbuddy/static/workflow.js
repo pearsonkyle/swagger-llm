@@ -393,12 +393,15 @@
               return;
             }
 
-            fetch('/docbuddy-proxy/tool-call', {
+            var proxyFetchOptions = {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(payload),
-              signal: self._abortController ? self._abortController.signal : null
-            })
+              body: JSON.stringify(payload)
+            };
+            if (self._abortController) {
+              proxyFetchOptions.signal = self._abortController.signal;
+            }
+            fetch('/docbuddy-proxy/tool-call', proxyFetchOptions)
               .then(function(res) {
                 if (self.state.aborted) { callback('(aborted)'); return; }
                 return res.json();

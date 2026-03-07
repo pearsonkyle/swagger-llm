@@ -302,9 +302,10 @@
                   borderRadius: "3px"
                 }
               },
-              React.createElement("span", { style: { fontWeight: "500" }, dangerouslySetInnerHTML: {
-                __html: "<strong>⚠️ Warning:</strong> API keys are stored in browser localStorage and may be accessible to any script running on this page."
-              }})
+              React.createElement("span", { style: { fontWeight: "500" } },
+                React.createElement("strong", null, "Warning:"),
+                " API keys are stored in browser localStorage and may be accessible to any script running on this page."
+              )
             )
           ),
           React.createElement(

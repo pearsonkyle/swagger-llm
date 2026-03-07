@@ -8,7 +8,7 @@ import sys
 import os
 
 # Add src directory to path for docbuddy import
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src")) # noqa: E402
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))  # noqa: E402
 
 from docbuddy import setup_docs
 
