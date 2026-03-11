@@ -766,7 +766,10 @@
 
   document.addEventListener('DOMContentLoaded', function() {
     window.applyLLMTheme(storedTheme.theme, storedTheme.customColors);
-    ensureOpenapiSchemaCached();
+    // Skip eager prefetch on standalone page — URL isn't known until user clicks Load
+    if (window.DOCBUDDY_VERSION !== 'standalone') {
+      ensureOpenapiSchemaCached();
+    }
   });
 
   var DEFAULT_STATE = {
