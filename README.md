@@ -9,6 +9,7 @@
 
 > Add an AI assistant to your `/docs` page.
 
+### Try the [Live Demo](https://pearsonkyle.github.io/DocBuddy/)
 
 ## Installation
 

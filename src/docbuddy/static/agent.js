@@ -421,6 +421,22 @@
         var toolSettings = DB.loadToolSettings();
 
         var selectedPreset = this.state.selectedPreset || 'agent';
+
+        // Ensure both system prompt config and OpenAPI schema are loaded before building the prompt
+        var configReady = DB.ensureSystemPromptConfig();
+        var schemaReady = new Promise(function(resolve) {
+          DB.ensureOpenapiSchemaCached(function() { resolve(); });
+        });
+
+        Promise.all([configReady, schemaReady]).then(function() {
+          var schema = DB._cachedOpenapiSchema || fullSchema;
+          self._streamWithPrompt(apiMessages, streamMsgId, schema, settings, toolSettings, selectedPreset);
+        });
+      }
+
+      _streamWithPrompt(apiMessages, streamMsgId, fullSchema, settings, toolSettings, selectedPreset) {
+        var self = this;
+
         var systemPrompt = DB.getSystemPromptForPreset(selectedPreset, fullSchema);
 
         // Append mode context

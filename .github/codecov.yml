@@ -1,0 +1,49 @@
+#Codecov Configuration File
+# Documentation: https://docs.codecov.com/docs/codecovyml-reference
+
+# Allow up to 5% decrease in coverage before failing the check
+coverage:
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 5%
+    patch:
+      default:
+        target: 80%
+        threshold: 5%
+
+# Coverage thresholds - fail if below these percentages
+codecov:
+  require_ci_to_pass: true
+  notify:
+    after_n_builds: 1
+    wait_for_ci: true
+
+# GitHub Checks configuration
+comment:
+  layout: "reach, diff, flags, files"
+  behavior: default
+  require_changes: false
+  require_base: false
+  require_head: true
+
+# Flag configurations for different test suites
+flag_management:
+  default_rules:
+    carryforward: false
+    statuses:
+      - type: project
+        target: 80%
+      - type: patch
+        target: 80%
+
+# Ignore certain files from coverage
+ignore:
+  - "tests/*"
+  - "*_test.py"
+  - "*/__pycache__/*"
+
+# Paths that are critical and need higher coverage
+paths:
+  - "src/docbuddy/"

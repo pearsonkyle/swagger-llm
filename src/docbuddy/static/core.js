@@ -6,6 +6,9 @@
 
   var DocBuddy = window.DocBuddy = {};
 
+  // Configurable base path for static assets (allows standalone/GitHub Pages usage)
+  var STATIC_BASE = window.DOCBUDDY_STATIC_BASE || '/docbuddy-static';
+
   // ── System Prompt Preset Configuration (load from JSON) ───────────────────
   var SYSTEM_PROMPT_CONFIG = null;
   var _systemPromptConfigPromise = null;
@@ -15,7 +18,7 @@
 
     // Start async fetch if not already in progress
     if (!_systemPromptConfigPromise) {
-      _systemPromptConfigPromise = fetch('/docbuddy-static/system-prompt-config.json')
+      _systemPromptConfigPromise = fetch(STATIC_BASE + '/system-prompt-config.json')
         .then(function(res) {
           if (!res.ok) throw new Error('HTTP ' + res.status);
           return res.json();
@@ -52,7 +55,17 @@
   DocBuddy.ensureSystemPromptConfig = ensureSystemPromptConfig;
 
   // ── Get system prompt for a preset ────────────────────────────────────────
-  function getSystemPromptForPreset(presetName, openapiSchema) {
+  function getSystemPromptForPreset(presetName, openapiSchema, customPromptText) {
+    // Handle custom user-provided prompt
+    if (presetName === 'custom' && customPromptText) {
+      var customPrompt = customPromptText;
+      if (customPrompt.includes('{openapi_context}') && openapiSchema) {
+        var ctx = buildOpenApiContext(openapiSchema);
+        customPrompt = customPrompt.replace('{openapi_context}', '\n\n' + ctx + '\n');
+      }
+      return customPrompt;
+    }
+
     var config = loadSystemPromptConfig();
     var preset = (config.presets || {})[presetName];
 
@@ -79,13 +92,70 @@
   // ── Default system prompt builder (fallback) ──────────────────────────────
   function buildDefaultSystemPrompt(schema) {
     var lines = [];
-    lines.push('You are a helpful API assistant. The user is looking at an API documentation page for an OpenAPI-compliant REST API.');
+    lines.push('You are a helpful API assistant. The user is looking at an API documentation page for an OpenAPI-compliant REST API.\n\n{openapi_context}');
 
-    if (schema) {
-      lines.push(buildOpenApiContext(schema));
+    lines.push('You can help the user understand endpoints, generate curl commands, explain request/response formats, and provide usage examples. You also have access to the `api_request` tool to execute API calls. When the user asks you to call an endpoint, use the tool instead of just showing a curl command. If a tool call returns an error, you may retry with corrected parameters.');
+
+    lines.push('## Tool Calling Instructions\n\n' +
+      'You have access to a tool called `api_request` that allows you to execute HTTP requests against the API. Use this tool when:\n\n' +
+      '- The user asks you to test an endpoint\n' +
+      '- The user wants to see data from the API\n' +
+      '- You need to verify how an endpoint works\n' +
+      '- Any situation where executing a real API call is helpful\n\n' +
+      '### Tool Call Format\n\n' +
+      'When using the `api_request` tool, respond with a JSON object containing your tool call:\n\n' +
+      '```json\n' +
+      '{\n' +
+      '  "tool_calls": [\n' +
+      '    {\n' +
+      '      "id": "call_123",\n' +
+      '      "type": "function",\n' +
+      '      "function": {\n' +
+      '        "name": "api_request",\n' +
+      '        "arguments": {\n' +
+      '          "method": "GET",\n' +
+      '          "path": "/users/{id}",\n' +
+      '          "query_params": {\n' +
+      '            "limit": "10"\n' +
+      '          },\n' +
+      '          "path_params": {\n' +
+      '            "id": "123"\n' +
+      '          }\n' +
+      '        }\n' +
+      '      }\n' +
+      '    }\n' +
+      '  ]\n' +
+      '}\n' +
+      '```\n\n' +
+      '### Tool Arguments Reference\n\n' +
+      '| Argument | Type | Description |\n' +
+      '|----------|------|-------------|\n' +
+      '| `method` | string | HTTP method: GET, POST, PUT, PATCH, DELETE |\n' +
+      '| `path` | string | API endpoint path (e.g., `/users`, `/users/{id}`) |\n' +
+      '| `query_params` | object | Query string parameters as key-value pairs |\n' +
+      '| `path_params` | object | Path template parameters to substitute |\n' +
+      '| `body` | object | JSON request body (for POST/PUT/PATCH) |\n\n' +
+      '### Important Guidelines\n\n' +
+      '1. **Always use the tool** when appropriate - don\'t just explain how to make the request\n' +
+      '2. **Fill in path parameters** before using `path` (e.g., `/users/123` instead of `/users/{id}`)\n' +
+      '3. **Set the correct HTTP method** - GET for reading, POST/PUT/PATCH for creating/updating\n' +
+      '4. **Provide all required arguments** - method and path are always required\n' +
+      '5. **Don\'t include Authorization header** - the system handles authentication\n' +
+      '6. **Use query_params for filters, pagination, sorting** - don\'t put these in the path\n' +
+      '7. **Include body only for POST/PUT/PATCH requests** - not for GET/DELETE\n' +
+      '8. **If unsure about path parameters**, ask the user or use placeholder values\n' +
+      '9. **Tool call will be automatically executed** by the system after you send it\n' +
+      '10. **Review tool results carefully** - if there\'s an error, correct the parameters and try again');
+
+    var prompt = lines.join('\n\n');
+
+    // Replace {openapi_context} placeholder with actual schema context
+    if (schema && prompt.includes('{openapi_context}')) {
+      var ctx = buildOpenApiContext(schema);
+      prompt = prompt.replace('{openapi_context}', '\n\n' + ctx + '\n');
     }
 
-    return lines.join('\n\n');
+    return prompt;
   }
 
   // ── LLM Provider configurations ─────────────────────────────────────────────
@@ -488,22 +558,37 @@
   // ── In-memory cache for OpenAPI schema ────────────────────────────────────
   DocBuddy._cachedOpenapiSchema = null;
   DocBuddy._openapiSchemaFetchPromise = null;
+  DocBuddy._schemaFetchUrl = null;
 
   function ensureOpenapiSchemaCached(onDone) {
+    var targetUrl = window.DOCBUDDY_OPENAPI_URL || "/openapi.json";
     if (DocBuddy._cachedOpenapiSchema) {
-      if (onDone) onDone(DocBuddy._cachedOpenapiSchema);
-      return;
+      if (DocBuddy._schemaFetchUrl === targetUrl) {
+        // Cache hit — same URL, return immediately
+        if (onDone) onDone(DocBuddy._cachedOpenapiSchema);
+        return;
+      }
+      // URL changed — invalidate stale cache
+      DocBuddy._cachedOpenapiSchema = null;
+      DocBuddy._openapiSchemaFetchPromise = null;
     }
     if (!DocBuddy._openapiSchemaFetchPromise) {
-      DocBuddy._openapiSchemaFetchPromise = fetch("/openapi.json")
+      var fetchUrl = targetUrl;
+      DocBuddy._schemaFetchUrl = fetchUrl;
+      DocBuddy._openapiSchemaFetchPromise = fetch(fetchUrl)
         .then(function(res) { return res.json(); })
         .then(function(schema) {
-          DocBuddy._cachedOpenapiSchema = schema;
-          DocBuddy._openapiSchemaFetchPromise = null;
+          // Only cache if this fetch is still current (prevents race conditions)
+          if (DocBuddy._schemaFetchUrl === fetchUrl) {
+            DocBuddy._cachedOpenapiSchema = schema;
+            DocBuddy._openapiSchemaFetchPromise = null;
+          }
           return schema;
         })
         .catch(function(err) {
-          DocBuddy._openapiSchemaFetchPromise = null;
+          if (DocBuddy._schemaFetchUrl === fetchUrl) {
+            DocBuddy._openapiSchemaFetchPromise = null;
+          }
           console.warn('Failed to fetch OpenAPI schema:', err);
         });
     }
@@ -681,7 +766,10 @@
 
   document.addEventListener('DOMContentLoaded', function() {
     window.applyLLMTheme(storedTheme.theme, storedTheme.customColors);
-    ensureOpenapiSchemaCached();
+    // Skip eager prefetch on standalone page — URL isn't known until user clicks Load
+    if (window.DOCBUDDY_VERSION !== 'standalone') {
+      ensureOpenapiSchemaCached();
+    }
   });
 
   var DEFAULT_STATE = {
@@ -890,80 +978,97 @@
 
   // ── System Prompt Preset Selector Component (for Settings panel) ───────────
   function createSystemPromptPresetSelector(React) {
-    return function SystemPromptPresetSelector(props) {
-      var config = loadSystemPromptConfig();
-      var presets = config.presets || {};
-      var presetKeys = Object.keys(presets);
-      var selectedValue = props.value || 'api_assistant';
-      var isCustom = selectedValue === 'custom';
+    return class SystemPromptPresetSelector extends React.Component {
+      constructor(props) {
+        super(props);
+        this.state = { config: SYSTEM_PROMPT_CONFIG };
+      }
 
-      var displayText = '';
-      if (isCustom) {
-        displayText = props.customPrompt || '';
-      } else {
-        var preset = presets[selectedValue];
-        if (preset) {
-          displayText = preset.prompt || '';
+      componentDidMount() {
+        var self = this;
+        ensureSystemPromptConfig().then(function(data) {
+          if (data && !self.state.config) {
+            self.setState({ config: data });
+          }
+        });
+      }
+
+      render() {
+        var props = this.props;
+        var config = this.state.config || { presets: {}, defaultPreset: 'api_assistant' };
+        var presets = config.presets || {};
+        var presetKeys = Object.keys(presets);
+        var selectedValue = props.value || 'api_assistant';
+        var isCustom = selectedValue === 'custom';
+
+        var displayText = '';
+        if (isCustom) {
+          displayText = props.customPrompt || '';
         } else {
-          displayText = buildDefaultSystemPrompt(null);
+          var preset = presets[selectedValue];
+          if (preset) {
+            displayText = preset.prompt || '';
+          } else {
+            displayText = buildDefaultSystemPrompt(null);
+          }
         }
-      }
 
-      var description = '';
-      if (!isCustom && presets[selectedValue]) {
-        description = presets[selectedValue].description || '';
-      }
+        var description = '';
+        if (!isCustom && presets[selectedValue]) {
+          description = presets[selectedValue].description || '';
+        }
 
-      var textareaStyle = Object.assign({}, props.inputStyle, {
-        resize: "vertical",
-        minHeight: "120px",
-        marginTop: "8px",
-        fontFamily: "'Consolas', 'Monaco', monospace",
-        fontSize: "12px",
-        lineHeight: "1.5",
-        whiteSpace: "pre-wrap",
-      });
+        var textareaStyle = Object.assign({}, props.inputStyle, {
+          resize: "vertical",
+          minHeight: "120px",
+          marginTop: "8px",
+          fontFamily: "'Consolas', 'Monaco', monospace",
+          fontSize: "12px",
+          lineHeight: "1.5",
+          whiteSpace: "pre-wrap",
+        });
 
-      return React.createElement(
-        "div",
-        { style: { marginBottom: "12px" } },
-        React.createElement("label", { style: props.labelStyle }, "System Prompt Preset"),
-        React.createElement(
-          "select",
-          {
-            value: selectedValue,
-            onChange: function(e) {
-              props.onChange(e.target.value);
-              var stored = loadFromStorage();
-              stored.systemPromptPreset = e.target.value;
-              saveToStorage(stored);
+        return React.createElement(
+          "div",
+          { style: { marginBottom: "12px" } },
+          React.createElement("label", { style: props.labelStyle }, "System Prompt Preset"),
+          React.createElement(
+            "select",
+            {
+              value: selectedValue,
+              onChange: function(e) {
+                props.onChange(e.target.value);
+                var stored = loadFromStorage();
+                stored.systemPromptPreset = e.target.value;
+                saveToStorage(stored);
+              },
+              style: props.inputStyle
             },
-            style: props.inputStyle
-          },
-          presetKeys.length > 0 ? presetKeys.map(function(key) {
-            return React.createElement("option", { key: key, value: key }, presets[key].name);
-          }) : React.createElement("option", { value: "api_assistant" }, "API Assistant"),
-          React.createElement("option", { value: "custom" }, "Custom...")
-        ),
-        description && React.createElement("div", {
-          style: { color: "var(--theme-text-secondary)", fontSize: "11px", marginTop: "4px", fontStyle: "italic" }
-        }, description),
-        React.createElement("textarea", {
-          value: displayText,
-          readOnly: !isCustom,
-          onChange: isCustom ? function(e) {
-            props.onCustomChange(e.target.value);
-            var stored = loadFromStorage();
-            stored.customSystemPrompt = e.target.value;
-            saveToStorage(stored);
-          } : undefined,
-          style: Object.assign({}, textareaStyle, !isCustom ? { opacity: 0.8, cursor: "default" } : {}),
-          placeholder: isCustom ? "Enter custom system prompt..." : ""
-        }),
-        !isCustom && React.createElement("div", {
-          style: { color: "var(--theme-text-secondary)", fontSize: "10px", marginTop: "4px" }
-        }, "{openapi_context} is replaced with your API schema at send time. Select \"Custom...\" to edit.")
-      );
+            presetKeys.length > 0 ? presetKeys.map(function(key) {
+              return React.createElement("option", { key: key, value: key }, presets[key].name);
+            }) : React.createElement("option", { value: "api_assistant" }, "API Assistant"),
+            React.createElement("option", { value: "custom" }, "Custom...")
+          ),
+          description && React.createElement("div", {
+            style: { color: "var(--theme-text-secondary)", fontSize: "11px", marginTop: "4px", fontStyle: "italic" }
+          }, description),
+          React.createElement("textarea", {
+            value: displayText,
+            readOnly: !isCustom,
+            onChange: isCustom ? function(e) {
+              props.onCustomChange(e.target.value);
+              var stored = loadFromStorage();
+              stored.customSystemPrompt = e.target.value;
+              saveToStorage(stored);
+            } : undefined,
+            style: Object.assign({}, textareaStyle, !isCustom ? { opacity: 0.8, cursor: "default" } : {}),
+            placeholder: isCustom ? "Enter custom system prompt..." : ""
+          }),
+          !isCustom && React.createElement("div", {
+            style: { color: "var(--theme-text-secondary)", fontSize: "10px", marginTop: "4px" }
+          }, "{openapi_context} is replaced with your API schema at send time. Select \"Custom...\" to edit.")
+        );
+      }
     };
   }
   DocBuddy.createSystemPromptPresetSelector = createSystemPromptPresetSelector;

@@ -10,6 +10,8 @@
   function LLMSettingsPanelFactory(system) {
     var React = system.React;
 
+    var SystemPromptPresetSelector = DB.createSystemPromptPresetSelector(React);
+
     return class LLMSettingsPanel extends React.Component {
       constructor(props) {
         super(props);
@@ -30,6 +32,8 @@
           enableTools: ts.enableTools || false,
           autoExecute: ts.autoExecute || false,
           toolApiKey: ts.apiKey || '',
+          systemPromptPreset: s.systemPromptPreset || 'api_assistant',
+          customSystemPrompt: s.customSystemPrompt || '',
         };
         this._debouncedSave = DB.debounce(this._saveSettings.bind(this), 300);
         this.handleProviderChange = this.handleProviderChange.bind(this);
@@ -506,8 +510,6 @@
             : s.connectionStatus
         );
 
-        var systemPromptPresetSelector = DB.createSystemPromptPresetSelector(React);
-
         var bodyContent = React.createElement(
           "div",
           { style: { padding: "16px", background: "var(--theme-panel-bg)" } },
@@ -529,7 +531,7 @@
             React.createElement("p", { style: { color: "var(--theme-text-secondary)", fontSize: "12px", marginBottom: "12px" } },
               "Select a preset system prompt that defines the assistant's behavior. The 'API Assistant' preset is optimized for REST API documentation."
             ),
-          React.createElement(systemPromptPresetSelector, {
+          React.createElement(SystemPromptPresetSelector, {
             value: s.systemPromptPreset || 'api_assistant',
             onChange: (function(val) {
               self.setState({ systemPromptPreset: val });

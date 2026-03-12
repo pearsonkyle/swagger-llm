@@ -398,7 +398,25 @@
         var toolSettings = DB.loadToolSettings();
 
         var selectedPreset = this.state.selectedPreset || 'api_assistant';
-        var systemPrompt = DB.getSystemPromptForPreset(selectedPreset, fullSchema);
+        var customPromptText = selectedPreset === 'custom' ? (this.state.customSystemPrompt || '') : '';
+
+        // Ensure both system prompt config and OpenAPI schema are loaded before building the prompt
+        var configReady = DB.ensureSystemPromptConfig();
+        var schemaReady = new Promise(function(resolve) {
+          DB.ensureOpenapiSchemaCached(function() { resolve(); });
+        });
+
+        Promise.all([configReady, schemaReady]).then(function() {
+          // Re-read schema from cache (it may have loaded after handleSend captured null)
+          var schema = DB._cachedOpenapiSchema || fullSchema;
+          self._streamWithPrompt(apiMessages, streamMsgId, schema, settings, toolSettings, selectedPreset, customPromptText);
+        });
+      }
+
+      _streamWithPrompt(apiMessages, streamMsgId, fullSchema, settings, toolSettings, selectedPreset, customPromptText) {
+        var self = this;
+
+        var systemPrompt = DB.getSystemPromptForPreset(selectedPreset, fullSchema, customPromptText);
 
         if (toolSettings.enableTools) {
           systemPrompt = systemPrompt.replace(/## Tool Calling Instructions[\s\S]*$/, '').trimEnd();
