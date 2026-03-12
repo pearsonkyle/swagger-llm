@@ -217,6 +217,14 @@
           var blockToolsEnabled = toolSettings.enableTools && (block.enableTools !== false);
 
           var selectedPreset = settings.systemPromptPreset || 'api_assistant';
+
+          // Ensure both system prompt config and OpenAPI schema are loaded before building the prompt
+          var configReady = DB.ensureSystemPromptConfig();
+          var schemaReady = new Promise(function(resolve) {
+            DB.ensureOpenapiSchemaCached(function() { resolve(); });
+          });
+
+          Promise.all([configReady, schemaReady]).then(function() {
           var systemPrompt = DB.getSystemPromptForPreset(selectedPreset, DB._cachedOpenapiSchema);
 
           if (blockToolsEnabled) {
@@ -506,6 +514,7 @@
               runBlock(idx + 1);
             });
           }
+          }); // end ensureSystemPromptConfig().then
         }
 
         runBlock(firstIdx);

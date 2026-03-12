@@ -1,0 +1,745 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <title>DocBuddy — AI-Enhanced API Documentation</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Load any OpenAPI schema or docs page and explore it with AI-powered chat, workflows, and agent assistance." />
+    <link rel="stylesheet" type="text/css" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.18.2/swagger-ui.css" integrity="sha384-rcbEi6xgdPk0iWkAQzT2F3FeBJXdG+ydrawGlfHAFIZG7wU6aKbQaRewysYpmrlW" crossorigin="anonymous" />
+    <!-- FOUC fix: Apply default theme immediately before page renders -->
+    <script>
+      (function() {
+        try {
+          var colorRe = /^#[0-9a-fA-F]{3,8}$|^rgba?\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*(,\s*(0|1|0?\.\d+))?\s*\)$/;
+          function safeColor(val, fallback) { return colorRe.test(val) ? val : fallback; }
+          var themeData = JSON.parse(localStorage.getItem('docbuddy-theme') || '{"theme":"light","customColors":{}}');
+          var colors = {
+            dark: { primary: '#1d4ed8', background: '#0f172a', textPrimary: '#f7fafc', secondary: '#2d3748', panelBg: '#1f2937', headerBg: '#111827', borderColor: '#4a5568', textSecondary: '#cbd5e0', inputBg: '#1f2937', accent: '#718096', primaryHover: '#1e40af' },
+            light: { primary: '#2563eb', background: '#f7fafc', textPrimary: '#1a202c', secondary: '#e2e8f0', panelBg: '#ffffff', headerBg: '#edf2f7', borderColor: '#cbd5e0', textSecondary: '#4a5568', inputBg: '#f7fafc', accent: '#718096', primaryHover: '#1d4ed8' }
+          };
+          var theme = colors[themeData.theme] || colors.light;
+          var merged = Object.assign({}, theme, themeData.customColors || {});
+          var css = ':root { --theme-primary: ' + safeColor(merged.primary, theme.primary) + '; --theme-primary-hover: ' + safeColor(merged.primaryHover || merged.primary, theme.primaryHover || theme.primary) + '; --theme-background: ' + safeColor(merged.background, theme.background) + '; --theme-text-primary: ' + safeColor(merged.textPrimary, theme.textPrimary) + '; --theme-secondary: ' + safeColor(merged.secondary, theme.secondary) + '; --theme-panel-bg: ' + safeColor(merged.panelBg || merged.secondary, theme.panelBg || theme.secondary) + '; --theme-header-bg: ' + safeColor(merged.headerBg || merged.background, theme.headerBg || theme.background) + '; --theme-border-color: ' + safeColor(merged.borderColor || merged.secondary, theme.borderColor || theme.secondary) + '; --theme-text-secondary: ' + safeColor(merged.textSecondary || "#6b7280", theme.textSecondary || "#6b7280") + '; --theme-input-bg: ' + safeColor(merged.inputBg || merged.secondary, theme.inputBg || theme.secondary) + '; --theme-accent: ' + safeColor(merged.accent, theme.accent) + '; }';
+          var style = document.createElement('style');
+          style.id = 'docbuddy-theme-styles';
+          style.textContent = css;
+          document.head.appendChild(style);
+        } catch(e) {}
+      })();
+    </script>
+    <style>
+      /* Swagger UI overrides (inline since we don't have server-mounted CSS) */
+      body {
+        background-color: var(--theme-background);
+        margin: 0;
+        font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+      }
+      .swagger-ui .topbar { background-color: var(--theme-header-bg) !important; }
+      .swagger-ui .info .title { color: var(--theme-text-primary) !important; }
+      .swagger-ui .info .description p,
+      .swagger-ui .info .description { color: var(--theme-text-secondary) !important; }
+      .swagger-ui .scheme-container { background-color: var(--theme-panel-bg) !important; border-bottom: 1px solid var(--theme-border-color) !important; }
+      .swagger-ui .opblock-tag { color: var(--theme-text-primary) !important; border-bottom: 1px solid var(--theme-border-color) !important; }
+      .swagger-ui .opblock .opblock-summary-description { color: var(--theme-text-secondary) !important; }
+      .swagger-ui .opblock .opblock-section-header { background-color: var(--theme-panel-bg) !important; border-bottom: 1px solid var(--theme-border-color) !important; }
+      .swagger-ui .opblock .opblock-section-header h4 { color: var(--theme-text-primary) !important; }
+      .swagger-ui table thead tr th { color: var(--theme-text-primary) !important; border-bottom: 1px solid var(--theme-border-color) !important; }
+      .swagger-ui table tbody tr td { color: var(--theme-text-primary) !important; border-bottom: 1px solid var(--theme-border-color) !important; }
+      .swagger-ui .parameter__name { color: var(--theme-text-primary) !important; }
+      .swagger-ui .parameter__type { color: var(--theme-text-secondary) !important; }
+      .swagger-ui .model-title { color: var(--theme-text-primary) !important; }
+      .swagger-ui section.models { border: 1px solid var(--theme-border-color) !important; }
+      .swagger-ui section.models h4 { color: var(--theme-text-primary) !important; border-bottom: 1px solid var(--theme-border-color) !important; }
+      .swagger-ui .model { color: var(--theme-text-primary) !important; }
+      .swagger-ui select { background-color: var(--theme-input-bg) !important; color: var(--theme-text-primary) !important; border: 1px solid var(--theme-border-color) !important; }
+      .swagger-ui input[type="text"],
+      .swagger-ui textarea { background-color: var(--theme-input-bg) !important; color: var(--theme-text-primary) !important; border: 1px solid var(--theme-border-color) !important; }
+      .swagger-ui .btn { color: var(--theme-text-primary) !important; border-color: var(--theme-border-color) !important; }
+
+      /* Landing page styles */
+      #docbuddy-landing {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        padding: 20px;
+        box-sizing: border-box;
+      }
+      #docbuddy-landing .landing-card {
+        background: var(--theme-panel-bg);
+        border: 1px solid var(--theme-border-color);
+        border-radius: 16px;
+        padding: 48px 40px 40px;
+        max-width: 640px;
+        width: 100%;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.08), 0 2px 8px rgba(0,0,0,0.04);
+      }
+      #docbuddy-landing h1 {
+        color: var(--theme-text-primary);
+        font-size: 32px;
+        font-weight: 800;
+        margin: 0 0 4px 0;
+        text-align: center;
+        letter-spacing: -0.5px;
+      }
+      #docbuddy-landing .tagline {
+        color: var(--theme-primary);
+        font-size: 13px;
+        font-weight: 600;
+        text-align: center;
+        margin: 0 0 8px 0;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+      }
+      #docbuddy-landing .subtitle {
+        color: var(--theme-text-secondary);
+        font-size: 15px;
+        text-align: center;
+        margin: 0 0 32px 0;
+        line-height: 1.6;
+      }
+      #docbuddy-landing label {
+        color: var(--theme-text-primary);
+        font-size: 13px;
+        font-weight: 600;
+        display: block;
+        margin-bottom: 6px;
+      }
+      #docbuddy-landing .input-group {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 16px;
+      }
+      #docbuddy-landing input[type="text"] {
+        flex: 1;
+        padding: 10px 14px;
+        border: 1px solid var(--theme-border-color);
+        border-radius: 8px;
+        background: var(--theme-input-bg);
+        color: var(--theme-text-primary);
+        font-size: 14px;
+        outline: none;
+        transition: border-color 0.2s, box-shadow 0.2s;
+      }
+      #docbuddy-landing input[type="text"]:focus {
+        border-color: var(--theme-primary);
+        box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+      }
+      #docbuddy-landing button {
+        padding: 10px 24px;
+        background: var(--theme-primary);
+        color: #fff;
+        border: none;
+        border-radius: 8px;
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: background 0.2s, transform 0.1s;
+        white-space: nowrap;
+      }
+      #docbuddy-landing button:hover {
+        background: var(--theme-primary-hover);
+      }
+      #docbuddy-landing button:active {
+        transform: scale(0.98);
+      }
+      #docbuddy-landing .hint {
+        color: var(--theme-text-secondary);
+        font-size: 12px;
+        margin-top: 4px;
+        line-height: 1.4;
+      }
+      #docbuddy-landing .hint code {
+        background: var(--theme-secondary);
+        padding: 1px 5px;
+        border-radius: 3px;
+        font-size: 11.5px;
+      }
+      #docbuddy-landing .examples {
+        margin-top: 24px;
+        padding-top: 20px;
+        border-top: 1px solid var(--theme-border-color);
+      }
+      #docbuddy-landing .examples h3 {
+        color: var(--theme-text-primary);
+        font-size: 13px;
+        font-weight: 600;
+        margin: 0 0 10px 0;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+      #docbuddy-landing .example-link {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 12px;
+        margin-bottom: 4px;
+        border-radius: 8px;
+        color: var(--theme-text-primary);
+        font-size: 13px;
+        text-decoration: none;
+        cursor: pointer;
+        transition: background 0.15s;
+      }
+      #docbuddy-landing .example-link:hover {
+        background: var(--theme-secondary);
+      }
+      #docbuddy-landing .example-link .example-icon {
+        font-size: 16px;
+        width: 24px;
+        text-align: center;
+        flex-shrink: 0;
+      }
+      #docbuddy-landing .example-link .example-name {
+        font-weight: 600;
+        color: var(--theme-text-primary);
+      }
+      #docbuddy-landing .example-link .example-url {
+        color: var(--theme-text-secondary);
+        font-size: 12px;
+        margin-left: auto;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      #docbuddy-landing .error-msg {
+        color: #ef4444;
+        font-size: 13px;
+        margin-top: 8px;
+        display: none;
+      }
+      #docbuddy-landing .or-divider {
+        text-align: center;
+        color: var(--theme-text-secondary);
+        font-size: 12px;
+        margin: 24px 0;
+        position: relative;
+      }
+      #docbuddy-landing .or-divider::before,
+      #docbuddy-landing .or-divider::after {
+        content: '';
+        position: absolute;
+        top: 50%;
+        width: 40%;
+        height: 1px;
+        background: var(--theme-border-color);
+      }
+      #docbuddy-landing .or-divider::before { left: 0; }
+      #docbuddy-landing .or-divider::after { right: 0; }
+
+      /* Install banner */
+      #docbuddy-landing .install-section {
+        margin-top: 24px;
+        padding-top: 20px;
+        border-top: 1px solid var(--theme-border-color);
+      }
+      #docbuddy-landing .install-section h3 {
+        color: var(--theme-text-primary);
+        font-size: 13px;
+        font-weight: 600;
+        margin: 0 0 10px 0;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+      #docbuddy-landing .install-section p {
+        color: var(--theme-text-secondary);
+        font-size: 13px;
+        line-height: 1.5;
+        margin: 0 0 12px 0;
+      }
+      #docbuddy-landing .install-code {
+        display: flex;
+        align-items: center;
+        background: var(--theme-secondary);
+        border: 1px solid var(--theme-border-color);
+        border-radius: 8px;
+        padding: 10px 14px;
+        font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+        font-size: 13px;
+        color: var(--theme-text-primary);
+        margin-bottom: 12px;
+        cursor: pointer;
+        transition: border-color 0.2s;
+        position: relative;
+      }
+      #docbuddy-landing .install-code:hover {
+        border-color: var(--theme-primary);
+      }
+      #docbuddy-landing .install-code .copy-hint {
+        margin-left: auto;
+        color: var(--theme-text-secondary);
+        font-size: 11px;
+        font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+      }
+      #docbuddy-landing .code-snippet {
+        background: var(--theme-secondary);
+        border: 1px solid var(--theme-border-color);
+        border-radius: 8px;
+        padding: 12px 14px;
+        font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+        font-size: 12.5px;
+        line-height: 1.5;
+        color: var(--theme-text-primary);
+        margin-bottom: 12px;
+        overflow-x: auto;
+        white-space: pre;
+      }
+      #docbuddy-landing .code-snippet .kw { color: var(--theme-primary); }
+      #docbuddy-landing .code-snippet .fn { color: var(--theme-text-primary); font-weight: 600; }
+      #docbuddy-landing .code-snippet .cm { color: var(--theme-text-secondary); font-style: italic; }
+      #docbuddy-landing .project-links {
+        display: flex;
+        gap: 12px;
+        margin-top: 8px;
+      }
+      #docbuddy-landing .project-links a {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        color: var(--theme-text-secondary);
+        font-size: 13px;
+        text-decoration: none;
+        padding: 6px 10px;
+        border-radius: 6px;
+        transition: color 0.15s, background 0.15s;
+      }
+      #docbuddy-landing .project-links a:hover {
+        color: var(--theme-primary);
+        background: var(--theme-secondary);
+      }
+      #docbuddy-landing .project-links a svg {
+        width: 16px;
+        height: 16px;
+        fill: currentColor;
+        flex-shrink: 0;
+      }
+
+      /* Swagger container (hidden initially) */
+      #swagger-ui { display: none; }
+
+      /* Top bar for loaded state */
+      #docbuddy-topbar {
+        display: none;
+        align-items: center;
+        justify-content: space-between;
+        padding: 8px 16px;
+        background: var(--theme-header-bg);
+        border-bottom: 1px solid var(--theme-border-color);
+        font-size: 13px;
+        flex-shrink: 0;
+      }
+      #docbuddy-topbar .topbar-left {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      #docbuddy-topbar .topbar-brand {
+        font-weight: 700;
+        color: var(--theme-primary);
+        font-size: 15px;
+      }
+      #docbuddy-topbar .topbar-url {
+        color: var(--theme-text-secondary);
+        font-size: 12px;
+        max-width: 500px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      #docbuddy-topbar button {
+        padding: 6px 14px;
+        background: var(--theme-secondary);
+        color: var(--theme-text-primary);
+        border: 1px solid var(--theme-border-color);
+        border-radius: 4px;
+        font-size: 12px;
+        cursor: pointer;
+        transition: background 0.2s;
+      }
+      #docbuddy-topbar button:hover {
+        background: var(--theme-border-color);
+      }
+
+      /* LLM Panel CSS */
+      #llm-settings-panel { font-family: 'Inter', 'Segoe UI', sans-serif; }
+      .llm-provider-badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; margin-right: 8px; color: #fff; }
+      .llm-provider-ollama { background-color: var(--theme-provider-ollama, #2b90d8); }
+      .llm-provider-vllm { background-color: var(--theme-provider-vllm, #facc15); color: #1a1a1a; }
+
+      /* Loading spinner */
+      .docbuddy-spinner {
+        display: inline-block;
+        width: 16px;
+        height: 16px;
+        border: 2px solid var(--theme-border-color);
+        border-top-color: var(--theme-primary);
+        border-radius: 50%;
+        animation: docbuddy-spin 0.6s linear infinite;
+        margin-right: 8px;
+        vertical-align: middle;
+      }
+      @keyframes docbuddy-spin {
+        to { transform: rotate(360deg); }
+      }
+
+      @media (max-width: 640px) {
+        #docbuddy-landing .landing-card { padding: 24px 16px; }
+        #docbuddy-landing .input-group { flex-direction: column; }
+        #docbuddy-topbar .topbar-url { max-width: 200px; }
+      }
+    </style>
+  </head>
+  <body>
+
+    <!-- Landing Page -->
+    <div id="docbuddy-landing">
+      <div class="landing-card">
+        <h1>DocBuddy</h1>
+        <p class="tagline">AI-Enhanced API Documentation</p>
+        <p class="subtitle">
+          Load any OpenAPI schema and explore it with Chat, Workflow, and Agent
+          assistance — powered by your local LLM.
+        </p>
+
+        <label for="url-input">OpenAPI Schema URL</label>
+        <div class="input-group">
+          <input type="text" id="url-input" placeholder="https://stablehorde.net/api/swagger.json" />
+          <button id="load-btn" onclick="handleLoad()">Load</button>
+        </div>
+        <p class="hint">
+          Enter a direct <code>openapi.json</code> URL, or paste a <code>/docs</code> page URL
+          and DocBuddy will auto-detect the schema.
+        </p>
+        <p class="error-msg" id="error-msg"></p>
+
+        <div class="or-divider">or try an example</div>
+
+        <div class="examples">
+          <h3>Example APIs</h3>
+          <a class="example-link" onclick="loadUrl('https://stablehorde.net/api/swagger.json')">
+            <span class="example-icon">&#127912;</span>
+            <span class="example-name">AI Horde</span>
+            <span class="example-url">stablehorde.net</span>
+          </a>
+          <a class="example-link" onclick="loadUrl('https://generator3.swagger.io/openapi.json')">
+            <span class="example-icon">&#9881;&#65039;</span>
+            <span class="example-name">Swagger Generator</span>
+            <span class="example-url">generator3.swagger.io</span>
+          </a>
+          <a class="example-link" onclick="loadUrl('https://api.replicate.com/openapi.json')">
+            <span class="example-icon">&#129302;</span>
+            <span class="example-name">Replicate</span>
+            <span class="example-url">api.replicate.com</span>
+          </a>
+        </div>
+
+        <div class="install-section">
+          <h3>Python Plugin</h3>
+          <p>
+            Replace your FastAPI <code>/docs</code> page with DocBuddy — get AI chat, workflows,
+            and agent tools directly alongside your API explorer.
+          </p>
+          <div class="install-code" onclick="navigator.clipboard.writeText('pip install docbuddy').then(function(){var h=this.querySelector('.copy-hint');h.textContent='Copied!';setTimeout(function(){h.textContent='Click to copy'},1500)}.bind(this))">
+            <span>pip install docbuddy</span>
+            <span class="copy-hint">Click to copy</span>
+          </div>
+          <div class="code-snippet"><span class="kw">from</span> fastapi <span class="kw">import</span> FastAPI
+<span class="kw">from</span> docbuddy <span class="kw">import</span> setup_docs
+
+app = <span class="fn">FastAPI</span>()
+<span class="fn">setup_docs</span>(app)  <span class="cm"># replaces default /docs</span></div>
+          <div class="project-links">
+            <a href="https://github.com/pearsonkyle/DocBuddy" target="_blank" rel="noopener">
+              <svg viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+              GitHub
+            </a>
+            <a href="https://pypi.org/project/docbuddy/" target="_blank" rel="noopener">
+              <svg viewBox="0 0 16 16"><path d="M6.2 1.6L2.4 3.2v4.8l3.8 1.6L10 7.8V3.2L6.2 1.6zM6 2.8l2.8 1.2L6 5.2 3.2 4 6 2.8zM3 4.8l2.7 1.1v3.5L3 8.2V4.8zm3.3 4.6V5.9L9 4.8v3.4L6.3 9.4z"/><path d="M9.8 4.8l3.8 1.6v4.8L9.8 12.8 6 11V6.4L9.8 4.8zM9.6 6l2.8 1.2L9.6 8.4 6.8 7.2 9.6 6zM6.6 8l2.7 1.1v3.5L6.6 11.4V8zm3.3 4.6V9.1l2.7-1.1v3.4l-2.7 1.2z"/></svg>
+              PyPI
+            </a>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Top bar (shown after loading) -->
+    <div id="docbuddy-topbar">
+      <div class="topbar-left">
+        <span class="topbar-brand">🤖 DocBuddy</span>
+        <span class="topbar-url" id="topbar-url"></span>
+      </div>
+      <button onclick="handleChangeUrl()">Change URL</button>
+    </div>
+
+    <!-- Swagger UI container -->
+    <div id="swagger-ui"></div>
+
+    <!-- CDN Dependencies -->
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.4/dist/purify.min.js" integrity="sha384-eEu5CTj3qGvu9PdJuS+YlkNi7d2XxQROAFYOr59zgObtlcux1ae1Il3u7jvdCSWu" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked@9.1.6/marked.min.js" integrity="sha384-odPBjvtXVM/5hOYIr3A1dB+flh0c3wAT3bSesIOqEGmyUA4JoKf/YTWy0XKOYAY7" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.18.2/swagger-ui-bundle.js" integrity="sha384-NXtFPpN61oWCuN4D42K6Zd5Rt2+uxeIT36R7kpXBuY9tLnZorzrJ4ykpqwJfgjpZ" crossorigin="anonymous"></script>
+
+    <script>
+      // Resolve base URL for DocBuddy static assets.
+      // When served locally (e.g. python -m http.server from repo root), use local files.
+      // Otherwise fall back to jsDelivr CDN for the published GitHub Pages site.
+      var IS_LOCAL = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+      var DOCBUDDY_CDN_BASE = 'https://cdn.jsdelivr.net/gh/pearsonkyle/DocBuddy@main/src/docbuddy/static';
+      var DOCBUDDY_LOCAL_BASE = '../src/docbuddy/static';
+      var DOCBUDDY_BASE = IS_LOCAL ? DOCBUDDY_LOCAL_BASE : DOCBUDDY_CDN_BASE;
+
+      window.DOCBUDDY_STATIC_BASE = DOCBUDDY_BASE;
+      window.DOCBUDDY_VERSION = 'standalone';
+
+      // Dynamically load DocBuddy JS files from the resolved base
+      var scripts = ['core.js', 'chat.js', 'settings.js', 'workflow.js', 'agent.js', 'plugin.js'];
+      scripts.forEach(function(name) {
+        document.write('<script src="' + DOCBUDDY_BASE + '/' + name + '"><\/script>');
+      });
+    </script>
+
+    <script>
+      // ── URL Handling Logic ──────────────────────────────────────────────────
+
+      /**
+       * Determine if a URL is likely an OpenAPI schema or a /docs page.
+       * Returns { type: 'schema'|'docs', schemaUrl: string }
+       */
+      function classifyUrl(rawUrl) {
+        var url = rawUrl.trim();
+        if (!url) return null;
+
+        // Add protocol if missing
+        if (!/^https?:\/\//i.test(url)) {
+          url = 'https://' + url;
+        }
+
+        try {
+          var parsed = new URL(url);
+
+          // If path ends with .json or .yaml/.yml, treat as schema
+          var path = parsed.pathname.toLowerCase();
+          if (path.endsWith('.json') || path.endsWith('.yaml') || path.endsWith('.yml')) {
+            return { type: 'schema', schemaUrl: url };
+          }
+
+          // If path contains /docs, /swagger, or /redoc, try to find the schema
+          if (path.includes('/docs') || path.includes('/swagger') || path.includes('/redoc')) {
+            // Try common OpenAPI schema paths relative to the base
+            var base = parsed.origin;
+            return { type: 'docs', schemaUrl: base + '/openapi.json', docsUrl: url, base: base };
+          }
+
+          // Otherwise, assume it's a schema URL
+          return { type: 'schema', schemaUrl: url };
+        } catch (e) {
+          return null;
+        }
+      }
+
+      /**
+       * Try fetching a URL to see if it returns valid JSON (OpenAPI schema).
+       * Returns a Promise resolving to the schema object or null.
+       */
+      function tryFetchSchema(url) {
+        return fetch(url)
+          .then(function(res) {
+            if (!res.ok) return null;
+            return res.json();
+          })
+          .then(function(data) {
+            // Basic OpenAPI validation: should have openapi or swagger field
+            if (data && (data.openapi || data.swagger)) return data;
+            return null;
+          })
+          .catch(function() { return null; });
+      }
+
+      /**
+       * Initialize SwaggerUI with the DocBuddy plugin for the given schema URL.
+       */
+      function initSwaggerUI(schemaUrl, prefetchedSchema) {
+        // Set the OpenAPI URL globally for DocBuddy's schema fetcher
+        window.DOCBUDDY_OPENAPI_URL = schemaUrl;
+        // Clear any cached schema so re-fetch uses the new URL
+        if (window.DocBuddy) {
+          window.DocBuddy._cachedOpenapiSchema = null;
+          window.DocBuddy._openapiSchemaFetchPromise = null;
+          window.DocBuddy._schemaFetchUrl = null;
+          // Prime the cache with the already-fetched schema to avoid a redundant fetch
+          if (prefetchedSchema) {
+            window.DocBuddy._cachedOpenapiSchema = prefetchedSchema;
+            window.DocBuddy._schemaFetchUrl = schemaUrl;
+          }
+        }
+
+        // Clear stale chat/agent history from previous schema sessions
+        // so the Chat and Agent panels start fresh with the new API context
+        try {
+          localStorage.removeItem('docbuddy-chat-history');
+          localStorage.removeItem('docbuddy-agent-history');
+        } catch(e) {}
+
+        // Show the UI
+        document.getElementById('docbuddy-landing').style.display = 'none';
+        document.getElementById('swagger-ui').style.display = 'block';
+        document.getElementById('docbuddy-topbar').style.display = 'flex';
+        document.getElementById('topbar-url').textContent = schemaUrl;
+
+        // Update URL bar with query parameter for sharing
+        var newUrl = window.location.pathname + '?url=' + encodeURIComponent(schemaUrl);
+        history.replaceState(null, '', newUrl);
+
+        // Persist last-used URL
+        try { localStorage.setItem('docbuddy-last-url', schemaUrl); } catch(e) {}
+
+        // Clear any existing swagger UI content
+        document.getElementById('swagger-ui').innerHTML = '';
+
+        var ui = SwaggerUIBundle({
+          url: schemaUrl,
+          dom_id: "#swagger-ui",
+          presets: [SwaggerUIBundle.presets.apis, SwaggerUIBundle.SwaggerUIStandalonePreset],
+          plugins: [
+            SwaggerUIBundle.plugins.DownloadUrl,
+            DocBuddyPlugin,
+          ],
+          layout: "LLMDocsLayout",
+          validatorUrl: null,
+        });
+        window.ui = ui;
+      }
+
+      /**
+       * Show an error message on the landing page.
+       */
+      function showError(msg) {
+        var el = document.getElementById('error-msg');
+        el.textContent = msg;
+        el.style.display = 'block';
+        // Reset button
+        var btn = document.getElementById('load-btn');
+        btn.innerHTML = 'Load';
+        btn.disabled = false;
+      }
+
+      function hideError() {
+        document.getElementById('error-msg').style.display = 'none';
+      }
+
+      /**
+       * Main handler: classify and load the URL.
+       */
+      function handleLoad() {
+        var input = document.getElementById('url-input');
+        var url = input.value.trim();
+        if (!url) {
+          showError('Please enter a URL.');
+          return;
+        }
+        hideError();
+
+        var btn = document.getElementById('load-btn');
+        btn.innerHTML = '<span class="docbuddy-spinner"></span>Loading…';
+        btn.disabled = true;
+
+        var classified = classifyUrl(url);
+        if (!classified) {
+          showError('Invalid URL. Please enter a valid URL.');
+          return;
+        }
+
+        if (classified.type === 'schema') {
+          // Direct schema URL — try to fetch it
+          tryFetchSchema(classified.schemaUrl).then(function(schema) {
+            if (schema) {
+              initSwaggerUI(classified.schemaUrl, schema);
+            } else {
+              showError('Could not load OpenAPI schema from this URL. Make sure the URL returns a valid OpenAPI/Swagger JSON and allows cross-origin requests (CORS).');
+            }
+          });
+        } else {
+          // /docs URL — first try to find the schema
+          var schemaCandidates = [
+            classified.base + '/openapi.json',
+            classified.base + '/swagger.json',
+            classified.base + '/api/v1/openapi.json',
+            classified.base + '/api/v2/openapi.json',
+            classified.base + '/api/v3/openapi.json',
+            classified.base + '/api-docs',
+          ];
+
+          // Try each candidate
+          (function tryNext(i) {
+            if (i >= schemaCandidates.length) {
+              // None worked — show error with guidance
+              showError(
+                'Could not auto-detect the OpenAPI schema. The /docs page may not allow cross-origin embedding. ' +
+                'Try entering the direct openapi.json URL instead.'
+              );
+              return;
+            }
+            tryFetchSchema(schemaCandidates[i]).then(function(schema) {
+              if (schema) {
+                initSwaggerUI(schemaCandidates[i], schema);
+              } else {
+                tryNext(i + 1);
+              }
+            });
+          })(0);
+        }
+      }
+
+      /**
+       * Load a URL directly (used by example links).
+       */
+      function loadUrl(url) {
+        document.getElementById('url-input').value = url;
+        handleLoad();
+      }
+
+      /**
+       * Go back to the landing page.
+       */
+      function handleChangeUrl() {
+        document.getElementById('swagger-ui').style.display = 'none';
+        document.getElementById('swagger-ui').innerHTML = '';
+        document.getElementById('docbuddy-topbar').style.display = 'none';
+        document.getElementById('docbuddy-landing').style.display = 'flex';
+        history.replaceState(null, '', window.location.pathname);
+        var btn = document.getElementById('load-btn');
+        btn.innerHTML = 'Load';
+        btn.disabled = false;
+      }
+
+      // ── Auto-load from query parameter on page load ─────────────────────────
+      (function() {
+        var params = new URLSearchParams(window.location.search);
+        var urlParam = params.get('url');
+
+        if (urlParam) {
+          document.getElementById('url-input').value = urlParam;
+          // Wait for DocBuddyPlugin to be available before loading
+          function tryLoad() {
+            if (typeof DocBuddyPlugin !== 'undefined' && typeof SwaggerUIBundle !== 'undefined') {
+              handleLoad();
+            } else {
+              setTimeout(tryLoad, 50);
+            }
+          }
+          if (document.readyState === 'complete') {
+            tryLoad();
+          } else {
+            window.addEventListener('load', tryLoad);
+          }
+        }
+      })();
+
+      // Allow Enter key to submit
+      document.getElementById('url-input').addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') { handleLoad(); }
+      });
+    </script>
+  </body>
+</html>

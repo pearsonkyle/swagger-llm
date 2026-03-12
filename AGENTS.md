@@ -9,8 +9,9 @@ This file provides guidance to AI coding assistants when working with code in th
 1. **API Explorer** — Enhanced OpenAPI documentation viewer
 2. **Chat Interface** — AI assistant for asking questions about API documentation with full OpenAPI context
 3. **Workflow Panel** — Multi-step AI workflows with tool calling support
-4. **LLM Settings** — Configurable settings for local LLM providers (Ollama, LM Studio, vLLM)
-5. **Direct Browser-to-LLM Communication** — No server proxy required for local LLMs
+4. **Agent Panel** — Autonomous task execution with Plan/Act modes and iterative tool calling
+5. **LLM Settings** — Configurable settings for local LLM providers (Ollama, LM Studio, vLLM)
+6. **Direct Browser-to-LLM Communication** — No server proxy required for local LLMs
 
 Since locally-hosted LLMs support CORS, the browser talks to them directly, eliminating:
 - The server proxy endpoint
@@ -64,7 +65,7 @@ The JavaScript codebase is split into **modular files** that communicate via the
 #### Module Loading Order
 
 ```
-core.js → chat.js, settings.js, workflow.js → plugin.js
+core.js → chat.js, settings.js, workflow.js, agent.js → plugin.js
 ```
 
 #### `core.js` — Shared Utilities & State
@@ -73,7 +74,7 @@ Establishes the `window.DocBuddy` namespace with all shared code:
 
 - **Storage helpers**: `loadFromStorage()`, `saveToStorage()`, `loadChatHistory()`, `saveChatHistory()`, `loadToolSettings()`, `saveToolSettings()`, `loadTheme()`, `saveTheme()`, `exportAsJson()`
 - **OpenAPI helpers**: `buildOpenApiContext(schema)`, `buildApiRequestTool(schema)`, `ensureOpenapiSchemaCached()`
-- **System prompts**: `loadSystemPromptConfig()`, `getSystemPromptForPreset(presetName, schema)`
+- **System prompts**: `loadSystemPromptConfig()`, `ensureSystemPromptConfig()`, `getSystemPromptForPreset(presetName, schema, customPromptText)`, `buildDefaultSystemPrompt(schema)`
 - **State management**: Redux-like actions, reducer (`llmSettingsReducer`), selectors, `dispatchAction()`
 - **Utilities**: `debounce()`, `generateMessageId()`, `copyToClipboard()`, `parseMarkdown()`, `buildCurlCommand()`
 - **Components**: `createCodeBlock()`, `createSystemPromptPresetSelector()`, `buildApiMessages()`
@@ -93,20 +94,40 @@ Contains `LLMSettingsPanelFactory` — the settings form with provider presets, 
 
 Contains `WorkflowPanelFactory` — the multi-step AI workflow builder with block chaining, tool calling, and output display.
 
+#### `agent.js` — Agent Panel
+
+Contains `AgentPanelFactory` — autonomous task execution agent with Plan/Act modes. Key features:
+- **Plan mode**: LLM proposes a plan, no tool execution
+- **Act mode**: Fully autonomous, auto-executes tool calls (bypasses `autoExecute` setting)
+- `MAX_AGENT_ITERATIONS = 20` governs how many iterations before pausing
+- `handleContinue()` resets iteration count and re-streams
+- Fires `docbuddy-agent-streaming` custom events for tab indicator dots
+
 #### `plugin.js` — Plugin Assembly & Tab Layout
 
 Assembles `window.DocBuddyPlugin` from the `DocBuddy` namespace components: actions, reducer, selectors, component factories, and the tab navigation layout (`LLMDocsLayout`).
 
 **Tab Layout Features:**
-- **4 Tabs**: API Explorer, Chat, Workflow, Settings
+- **5 Tabs**: API Explorer, Chat, Workflow, Agent, Settings
+- **All tabs always mounted** (hidden via `display:none`) to preserve state across tab switches
 - **Tab Persistence**: Saves active tab to localStorage (`docbuddy-active-tab`)
-- **Dynamic Height**: Chat and Settings tabs use full available height (calc(100vh - 120px))
+- **Dynamic Height**: Chat, Agent, and Settings tabs use full available height (calc(100vh - 120px))
 - **API Tab Scrolling**: API tab allows normal scrolling (no overscroll containment)
-- **Streaming Indicators**: Pulsing dots on Chat/Workflow tabs when streaming in background
+- **Streaming Indicators**: Pulsing dots on Chat/Workflow/Agent tabs when streaming in background
 
 **Global Functions:**
 - `window.llmSwitchTab(tabName)` — Switch tabs programmatically
 - `window.llmOpenSettings()` — Open settings panel from external links
+
+### Standalone Page (`docs/index.html`)
+
+A self-contained GitHub Pages hosted page that loads DocBuddy from CDN, allowing users to explore any public OpenAPI schema without installing the Python package.
+
+- **Dynamic script loading**: Detects `localhost`/`127.0.0.1` and loads local JS files (`../src/docbuddy/static/`) for development; uses jsDelivr CDN (`@main` branch) otherwise
+- **URL classification**: Accepts direct `openapi.json` URLs or `/docs` page URLs (auto-detects schema via common path probing)
+- **Schema caching**: Pre-fetches schema via `tryFetchSchema()` and primes `DocBuddy._cachedOpenapiSchema` to avoid redundant fetches
+- **Shareable URLs**: Updates `?url=` query parameter for bookmarking/sharing loaded APIs
+- **Local dev**: Run `python3 -m http.server 8080` from repo root, then open `http://localhost:8080/docs/index.html`
 
 ### Template (`src/docbuddy/templates/`)
 
@@ -170,6 +191,7 @@ The plugin uses the following keys to persist user preferences:
 |-----|---------|
 | `docbuddy-settings` | LLM configuration (baseUrl, apiKey, modelId, maxTokens, temperature, provider) |
 | `docbuddy-chat-history` | Chat conversation history (last 20 messages) |
+| `docbuddy-agent-history` | Agent conversation history |
 | `docbuddy-theme` | Theme preferences (theme name + custom colors) |
 | `docbuddy-active-tab` | Currently selected tab ("api", "chat", "workflow", or "settings") |
 | `docbuddy-tool-settings` | Tool calling config (enableTools, autoExecute, apiKey) |
@@ -225,8 +247,14 @@ Defined in `system-prompt-config.json`:
 | Preset | Name | Description |
 |--------|------|-------------|
 | `api_assistant` | API Assistant | Optimized for REST API documentation, can execute API calls via tool calling |
+| `agent` | Agent | Autonomous task execution agent with clarify/plan/execute/deliver workflow |
+| `custom` | Custom... | User-provided prompt text (supports `{openapi_context}` placeholder) |
 
 The `{openapi_context}` placeholder is replaced with the formatted OpenAPI schema at send time.
+
+**Async loading**: The config is fetched asynchronously. All panels (`chat.js`, `agent.js`, `workflow.js`) await both `ensureSystemPromptConfig()` and `ensureOpenapiSchemaCached()` via `Promise.all` before building the system prompt. The `SystemPromptPresetSelector` component (class-based) stores the config in state and re-renders when the async fetch completes.
+
+**Fallback**: If `system-prompt-config.json` fails to load, `buildDefaultSystemPrompt()` provides a full fallback prompt with tool calling instructions and the `{openapi_context}` placeholder.
 
 ## Key Conventions for AI Developers
 
@@ -260,7 +288,7 @@ In `swagger_ui.html`, plugins must be registered in this order:
 
 The script loading order is critical:
 1. `core.js` (creates `window.DocBuddy` namespace)
-2. `chat.js`, `settings.js`, `workflow.js` (any order among these)
+2. `chat.js`, `settings.js`, `workflow.js`, `agent.js` (any order among these)
 3. `plugin.js` (assembles `window.DocBuddyPlugin` with layout)
 
 Changing this order will break the UI.
@@ -312,9 +340,11 @@ Changing this order will break the UI.
 | `src/docbuddy/static/chat.js` | ChatPanel component |
 | `src/docbuddy/static/settings.js` | LLMSettingsPanel component |
 | `src/docbuddy/static/workflow.js` | WorkflowPanel component |
+| `src/docbuddy/static/agent.js` | AgentPanel component (Plan/Act modes) |
 | `src/docbuddy/static/plugin.js` | Plugin assembly, tab layout (combines namespace into DocBuddyPlugin) |
 | `src/docbuddy/templates/swagger_ui.html` | Jinja2 template for docs page |
 | `src/docbuddy/static/system-prompt-config.json` | System prompt presets configuration |
+| `docs/index.html` | Standalone GitHub Pages page (loads DocBuddy from CDN or local) |
 | `examples/demo_server.py` | Demo FastAPI server with sample endpoints |
 
 ## Testing Guidelines
