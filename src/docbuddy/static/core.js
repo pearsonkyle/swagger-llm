@@ -35,6 +35,13 @@
     if (SYSTEM_PROMPT_CONFIG) return SYSTEM_PROMPT_CONFIG;
     if (_systemPromptConfigFailed) return DEFAULT_SYSTEM_PROMPT_CONFIG;
 
+    // In standalone/GitHub Pages mode, skip the fetch — inline defaults are canonical
+    if (window.DOCBUDDY_VERSION === 'standalone') {
+      SYSTEM_PROMPT_CONFIG = DEFAULT_SYSTEM_PROMPT_CONFIG;
+      _systemPromptConfigPromise = Promise.resolve(SYSTEM_PROMPT_CONFIG);
+      return SYSTEM_PROMPT_CONFIG;
+    }
+
     // Start async fetch if not already in progress
     if (!_systemPromptConfigPromise) {
       _systemPromptConfigPromise = fetch(STATIC_BASE + '/system-prompt-config.json')
@@ -48,7 +55,7 @@
           return SYSTEM_PROMPT_CONFIG;
         })
         .catch(function(err) {
-          console.warn('Failed to load system-prompt-config.json, using inline defaults:', err);
+          console.debug('system-prompt-config.json not available, using inline defaults');
           // Use inline default config when fetch fails (GitHub Pages, CDN issues)
           SYSTEM_PROMPT_CONFIG = DEFAULT_SYSTEM_PROMPT_CONFIG;
           _systemPromptConfigFailed = true;
