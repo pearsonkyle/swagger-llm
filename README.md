@@ -55,9 +55,36 @@ Enable tool calling in the settings to allow the assistant to make API requests 
 
 ## Standalone Mode
 
-DocBuddy has a standalone webpage (e.g. hosted on GitHub Pages) that connects to any OpenAPI schema and LLM provider. However, due to browser security restrictions (CORS), if you want to use local LLMs, you must run DocBuddy locally instead of from GitHub Pages.
-1.  Run `python3 -m http.server 8080` from the repo root
-2.  Visit in your browser [http://localhost:8080/docs/index.html](http://localhost:8080/docs/index.html)
+### Option 1: Using the CLI (Recommended)
+
+After installing DocBuddy, use the `docbuddy` command to launch the standalone webpage:
+
+```bash
+pip install docbuddy
+docbuddy
+```
+
+This starts a local server on port **8008** and opens your browser to [http://localhost:8008/docs/index.html](http://localhost:8008/docs/index.html).
+
+#### Custom Host/Port
+
+Use `--host` and `--port` options to customize the server:
+
+```bash
+docbuddy --port 9000
+docbuddy -p 8080 --host 127.0.0.1
+```
+
+Run `docbuddy --help` for more information.
+
+### Option 2: Manual Local Server
+
+If you prefer manual control, run DocBuddy from the repo root:
+
+1. Run `python3 -m http.server 8080` from the repo root
+2. Visit in your browser [http://localhost:8080/docs/index.html](http://localhost:8080/docs/index.html)
+
+> **Note:** Due to browser security restrictions (CORS), if you want to use local LLMs (Ollama, LM Studio, vLLM), you must run DocBuddy locally instead of from the GitHub Pages hosted version.
 
 
 ## LLM Settings

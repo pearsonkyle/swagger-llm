@@ -435,15 +435,27 @@
         </div>
 
         <div class="install-section">
-          <h3>Python Plugin</h3>
+          <h3>🚀 Run Locally with CLI</h3>
           <p>
-            Replace your FastAPI <code>/docs</code> page with DocBuddy — get AI chat, workflows,
-            and agent tools directly alongside your API explorer.
+            Launch this page locally in order to connect to local LLMs (Ollama, LM Studio, vLLM).
           </p>
           <div class="install-code" onclick="navigator.clipboard.writeText('pip install docbuddy').then(function(){var h=this.querySelector('.copy-hint');h.textContent='Copied!';setTimeout(function(){h.textContent='Click to copy'},1500)}.bind(this))">
             <span>pip install docbuddy</span>
             <span class="copy-hint">Click to copy</span>
           </div>
+          <div class="install-code" onclick="navigator.clipboard.writeText('docbuddy').then(function(){var h=this.querySelector('.copy-hint');h.textContent='Copied!';setTimeout(function(){h.textContent='Click to copy'},1500)}.bind(this))">
+            <span>docbuddy</span>
+            <span class="copy-hint">Click to copy</span>
+          </div>
+          <p style="font-size: 12px; color: var(--theme-text-secondary); margin-top: 8px;">
+            Opens at <code>http://localhost:8008/docs/index.html</code>
+          </p>
+
+          <h3>Python Plugin</h3>
+          <p>
+            Replace your FastAPI <code>/docs</code> page with DocBuddy — get AI chat, workflows,
+            and agent tools directly alongside your API explorer.
+          </p>
           <div class="code-snippet"><span class="kw">from</span> fastapi <span class="kw">import</span> FastAPI
 <span class="kw">from</span> docbuddy <span class="kw">import</span> setup_docs
 
