@@ -17,7 +17,7 @@
 pip install docbuddy
 ```
 
-Run the standalone page locally by running the following command:
+Run the standalone page locally with the command:
 
 ```bash
 docbuddy --port 9000
