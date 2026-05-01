@@ -319,8 +319,8 @@
         var isError = responseObj.status < 200 || responseObj.status >= 300;
         var remainingQueue = (s.pendingToolCallQueue || []).slice();
 
-        var truncatedBody = (responseObj.body || '').substring(0, MAX_TOOL_RESPONSE_LENGTH);
-        var resultContent = 'Status: ' + responseObj.status + ' ' + (responseObj.statusText || '') + '\n\n' + truncatedBody;
+        var body = responseObj.body || '';
+        var resultContent = 'Status: ' + responseObj.status + ' ' + (responseObj.statusText || '') + '\n\n' + body;
 
         var toolResultMsg = {
           role: 'tool',
@@ -812,8 +812,9 @@
                 ),
                 React.createElement(CodeBlock, {
                   key: "tool-response-codeblock",
-                  text: formattedBody ? formattedBody.substring(0, 2000) : '',
+                  text: formattedBody || '',
                   language: "json",
+                  maxHeight: "300px",
                   messageId: msg.messageId
                 })
               )

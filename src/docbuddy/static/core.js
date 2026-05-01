@@ -1330,6 +1330,19 @@
         var messageId = this.props.messageId;
         var copied = this.state.copied;
         var isHovering = this.state.isHovering;
+        var maxHeight = this.props.maxHeight;
+        var scrollStyle = {
+          padding: "0",
+          margin: 0,
+          overflowX: "auto",
+          whiteSpace: "pre-wrap",
+          wordBreak: "break-all",
+          cursor: "pointer",
+        };
+        if (maxHeight) {
+          scrollStyle.maxHeight = maxHeight;
+          scrollStyle.overflowY = "auto";
+        }
 
         return React.createElement(
           "div",
@@ -1398,14 +1411,7 @@
           React.createElement(
             "div",
             {
-              style: {
-                padding: "0",
-                margin: 0,
-                overflowX: "auto",
-                whiteSpace: "pre-wrap",
-                wordBreak: "break-all",
-                cursor: "pointer",
-              },
+              style: scrollStyle,
               onClick: this.handleClick,
               onTouchStart: this.handleTouchStart.bind(this),
             },
