@@ -55,7 +55,6 @@
         this.renderToolCallPanel = this.renderToolCallPanel.bind(this);
         this.toggleMode = this.toggleMode.bind(this);
         this._copyTimeoutId = null;
-        this._executedToolCallMsg = null;
         this._debouncedSaveAgentHistory = DB.debounce(function(history) {
           DB.saveAgentHistory(history);
         }, 500);
@@ -146,6 +145,8 @@
         var self = this;
         var s = this.state;
 
+        if (!s.pendingToolCall) return;
+
         var executedArgs = {
           method: s.editMethod || 'GET',
           path: s.editPath || '',
@@ -156,24 +157,40 @@
           try { executedArgs.body = JSON.parse(s.editBody || '{}'); } catch (e) { executedArgs.body = {}; }
         }
 
-        if (self._pendingToolCallMsg) {
-          var toolMsg = Object.assign({}, self._pendingToolCallMsg, {
-            _displayContent: 'Tool call: api_request(' + executedArgs.method + ' ' + executedArgs.path + ')',
-            _toolArgs: executedArgs
-          });
-          if (toolMsg.tool_calls && toolMsg.tool_calls.length > 0) {
-            toolMsg.tool_calls = toolMsg.tool_calls.map(function(tc) {
-              return Object.assign({}, tc, {
-                function: Object.assign({}, tc.function, {
-                  arguments: JSON.stringify(executedArgs)
-                })
-              });
+        var toolCallId = s.pendingToolCall.id;
+        var toolCallName = (s.pendingToolCall.function && s.pendingToolCall.function.name) || 'api_request';
+
+        // Linear history: update the in-history assistant tool_calls message in place
+        // with the user's edited arguments. No out-of-band buffers, no race with
+        // setState flush — the next step always reads from the canonical history.
+        self.setState(function(prev) {
+          var history = (prev.agentHistory || []).map(function(m) {
+            if (!m.tool_calls || m.tool_calls.length === 0) return m;
+            var matches = m.tool_calls.some(function(tc) { return tc.id === toolCallId; });
+            if (!matches) return m;
+            return Object.assign({}, m, {
+              _displayContent: 'Tool call: ' + toolCallName + '(' + executedArgs.method + ' ' + executedArgs.path + ')',
+              _toolArgs: executedArgs,
+              tool_calls: m.tool_calls.map(function(tc) {
+                if (tc.id !== toolCallId) return tc;
+                return Object.assign({}, tc, {
+                  function: Object.assign({}, tc.function, {
+                    arguments: JSON.stringify(executedArgs)
+                  })
+                });
+              })
             });
-          }
-          self.addMessage(toolMsg);
-          self._executedToolCallMsg = toolMsg;
-          self._pendingToolCallMsg = null;
-        }
+          });
+          DB.saveAgentHistory(history);
+          return { agentHistory: history };
+        }, function() {
+          self._performToolFetch(executedArgs);
+        });
+      }
+
+      _performToolFetch(executedArgs) {
+        var self = this;
+        var s = this.state;
 
         var url = s.editPath;
 
@@ -302,8 +319,8 @@
         var isError = responseObj.status < 200 || responseObj.status >= 300;
         var remainingQueue = (s.pendingToolCallQueue || []).slice();
 
-        var truncatedBody = (responseObj.body || '').substring(0, MAX_TOOL_RESPONSE_LENGTH);
-        var resultContent = 'Status: ' + responseObj.status + ' ' + (responseObj.statusText || '') + '\n\n' + truncatedBody;
+        var body = responseObj.body || '';
+        var resultContent = 'Status: ' + responseObj.status + ' ' + (responseObj.statusText || '') + '\n\n' + body;
 
         var toolResultMsg = {
           role: 'tool',
@@ -313,20 +330,9 @@
           _displayContent: 'Tool result: Status ' + responseObj.status
         };
 
-        // Synchronous rejection paths (URL validation, path traversal, JSON parse) call
-        // sendToolResult on the same tick as addMessage(toolMsg), so that setState may not
-        // have flushed yet. Manually ensure the assistant tool_calls message is present in
-        // the snapshot so the OpenAI API tool-calls → tool-result contract is not broken.
-        var currentHistory = (self.state.agentHistory || []).slice();
-        if (self._executedToolCallMsg) {
-          var alreadyPresent = currentHistory.some(function(m) {
-            return m.messageId === self._executedToolCallMsg.messageId;
-          });
-          if (!alreadyPresent) currentHistory.push(self._executedToolCallMsg);
-          self._executedToolCallMsg = null;
-        }
-        currentHistory.push(toolResultMsg);
-
+        // Linear history: handleExecuteToolCall already wrote the assistant
+        // tool_calls message into history before fetching, so the OpenAI
+        // tool-calls → tool-result chain is well-formed by construction.
         self.addMessage(toolResultMsg);
 
         if (remainingQueue.length > 0) {
@@ -553,33 +559,40 @@
                 tool_calls: toolCallsList.map(function(t) {
                   return { id: t.id, type: 'function', function: { name: t.function.name, arguments: t.function.arguments } };
                 }),
+                // Pre-populate display fields so the curl command and method/path
+                // badge render correctly before the user edits or executes the call.
+                _toolArgs: args,
+                _displayContent: 'Tool call: api_request(' + (args.method || 'GET') + ' ' + (args.path || '') + ')',
                 messageId: streamMsgId
               };
-              self._pendingToolCallMsg = assistantToolMsg;
 
+              // Linear history: replace the streaming empty assistant placeholder
+              // with the tool_calls message in a single update. The message is
+              // canonical from this point on — no out-of-band buffer.
               self.setState(function(prev) {
                 var history = (prev.agentHistory || []).filter(function(m) {
                   return m.messageId !== streamMsgId;
                 });
+                history.push(assistantToolMsg);
                 DB.saveAgentHistory(history);
                 return { agentHistory: history };
-              });
-
-              self.setState({
-                isTyping: false,
-                pendingToolCall: toolCallsList[0],
-                pendingToolCallQueue: toolCallsList.slice(1),
-                editMethod: args.method || 'GET',
-                editPath: args.path || '',
-                editQueryParams: JSON.stringify(args.query_params || {}, null, 2),
-                editPathParams: JSON.stringify(args.path_params || {}, null, 2),
-                editBody: JSON.stringify(args.body || {}, null, 2),
-                toolCallResponse: null,
               }, function() {
-                var toolSettings = DB.loadToolSettings();
-                if (toolSettings.autoExecute && self.state.mode === 'act') {
-                  self.handleExecuteToolCall();
-                }
+                self.setState({
+                  isTyping: false,
+                  pendingToolCall: toolCallsList[0],
+                  pendingToolCallQueue: toolCallsList.slice(1),
+                  editMethod: args.method || 'GET',
+                  editPath: args.path || '',
+                  editQueryParams: JSON.stringify(args.query_params || {}, null, 2),
+                  editPathParams: JSON.stringify(args.path_params || {}, null, 2),
+                  editBody: JSON.stringify(args.body || {}, null, 2),
+                  toolCallResponse: null,
+                }, function() {
+                  var toolSettings = DB.loadToolSettings();
+                  if (toolSettings.autoExecute && self.state.mode === 'act') {
+                    self.handleExecuteToolCall();
+                  }
+                });
               });
               window.dispatchEvent(new CustomEvent('docbuddy-agent-streaming', { detail: { streaming: false } }));
               self._currentCancelToken = null;
@@ -612,7 +625,6 @@
         var msgId = DB.generateMessageId();
         var streamMsgId = DB.generateMessageId();
 
-        self._pendingToolCallMsg = null;
         self.setState({ input: "", pendingToolCall: null, toolCallResponse: null, toolRetryCount: 0, iterationCount: 0, maxIterationsReached: false });
 
         var userMsg = { role: 'user', content: userInput, messageId: msgId };
@@ -655,6 +667,34 @@
       clearHistory() {
         DB.saveAgentHistory([]);
         this.setState({ agentHistory: [], iterationCount: 0 });
+      }
+
+      buildTrajectory() {
+        // Replay-ready trajectory: system prompt + raw API-shape messages.
+        // Mirrors mini-swe-agent's linear-history philosophy — the trajectory is
+        // exactly what would be sent to the LLM, suitable for debugging or replay.
+        var settings = DB.loadFromStorage();
+        var schema = DB._cachedOpenapiSchema || null;
+        var preset = this.state.selectedPreset || 'agent';
+        var system = '';
+        try {
+          system = DB.getSystemPromptForPreset(preset, schema, this.state.customSystemPrompt);
+        } catch (e) {
+          system = '';
+        }
+        var messages = [{ role: 'system', content: system }].concat(
+          DB.buildApiMessages(this.state.agentHistory || [])
+        );
+        return {
+          version: 1,
+          format: 'docbuddy-agent-trajectory',
+          created_at: new Date().toISOString(),
+          mode: this.state.mode,
+          preset: preset,
+          model: settings.modelId || null,
+          base_url: settings.baseUrl || null,
+          messages: messages
+        };
       }
 
       renderMessage(msg, idx) {
@@ -776,8 +816,9 @@
                 ),
                 React.createElement(CodeBlock, {
                   key: "tool-response-codeblock",
-                  text: formattedBody ? formattedBody.substring(0, 2000) : '',
+                  text: formattedBody || '',
                   language: "json",
+                  maxHeight: "300px",
                   messageId: msg.messageId
                 })
               )
@@ -958,7 +999,26 @@
               style: { background: "var(--theme-primary)", color: "#fff", border: "none", borderRadius: "4px", padding: "5px 14px", cursor: "pointer", fontSize: "12px", fontWeight: "500" }
             }, "▶ Execute"),
             React.createElement("button", {
-              onClick: function() { self._pendingToolCallMsg = null; self.setState({ pendingToolCall: null, toolCallResponse: null }); },
+              onClick: function() {
+                var pid = self.state.pendingToolCall;
+                var pidId = pid ? pid.id : null;
+                // Linear history: drop the assistant tool_calls message that
+                // was appended on receipt, so the OpenAI chain stays valid.
+                self.setState(function(prev) {
+                  var history = (prev.agentHistory || []).filter(function(m) {
+                    if (!m.tool_calls || m.tool_calls.length === 0) return true;
+                    if (!pidId) return true;
+                    return !m.tool_calls.some(function(tc) { return tc.id === pidId; });
+                  });
+                  DB.saveAgentHistory(history);
+                  return {
+                    agentHistory: history,
+                    pendingToolCall: null,
+                    pendingToolCallQueue: [],
+                    toolCallResponse: null
+                  };
+                });
+              },
               style: { background: "var(--theme-accent)", color: "#fff", border: "none", borderRadius: "4px", padding: "5px 14px", cursor: "pointer", fontSize: "12px" }
             }, "Dismiss")
           )
@@ -1047,9 +1107,11 @@
                     onClick: function() {
                       var history = self.state.agentHistory || [];
                       if (history.length === 0) return;
-                      DB.exportAsJson(history, 'agent-history-' + new Date().toISOString().slice(0, 10) + '.json');
+                      var trajectory = self.buildTrajectory();
+                      DB.exportAsJson(trajectory, 'agent-trajectory-' + new Date().toISOString().slice(0, 10) + '.json');
                     },
                     disabled: !(this.state.agentHistory && this.state.agentHistory.length > 0),
+                    title: "Export replay-ready trajectory: system prompt + raw API messages.",
                     style: { border: 'none', borderRadius: '6px', cursor: (this.state.agentHistory && this.state.agentHistory.length > 0) ? 'pointer' : 'not-allowed', fontSize: '12px', fontWeight: '500', transition: 'all 0.2s ease', background: 'var(--theme-secondary)', opacity: (this.state.agentHistory && this.state.agentHistory.length > 0) ? 1 : 0.5, color: 'var(--theme-text-primary)', padding: '8px 12px' }
                   },
                   "⬇ Export"

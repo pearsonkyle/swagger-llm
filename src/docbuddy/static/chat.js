@@ -250,8 +250,8 @@
 
         var toolCallId = s.pendingToolCall ? s.pendingToolCall.id : 'call_unknown';
 
-        var truncatedBody = (responseObj.body || '').substring(0, 4000);
-        var resultContent = 'Status: ' + responseObj.status + ' ' + (responseObj.statusText || '') + '\n\n' + truncatedBody;
+        var body = responseObj.body || '';
+        var resultContent = 'Status: ' + responseObj.status + ' ' + (responseObj.statusText || '') + '\n\n' + body;
 
         var toolResultMsg = {
           role: 'tool',
@@ -747,8 +747,9 @@
                 ),
                 React.createElement(CodeBlock, {
                   key: "tool-response-codeblock",
-                  text: formattedBody ? formattedBody.substring(0, 2000) : '',
+                  text: formattedBody || '',
                   language: "json",
+                  maxHeight: "300px",
                   messageId: msg.messageId
                 })
               )

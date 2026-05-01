@@ -1330,6 +1330,19 @@
         var messageId = this.props.messageId;
         var copied = this.state.copied;
         var isHovering = this.state.isHovering;
+        var maxHeight = this.props.maxHeight;
+        var scrollStyle = {
+          padding: "0",
+          margin: 0,
+          overflowX: "auto",
+          whiteSpace: "pre-wrap",
+          wordBreak: "break-all",
+          cursor: "pointer",
+        };
+        if (maxHeight) {
+          scrollStyle.maxHeight = maxHeight;
+          scrollStyle.overflowY = "auto";
+        }
 
         return React.createElement(
           "div",
@@ -1398,14 +1411,7 @@
           React.createElement(
             "div",
             {
-              style: {
-                padding: "0",
-                margin: 0,
-                overflowX: "auto",
-                whiteSpace: "pre-wrap",
-                wordBreak: "break-all",
-                cursor: "pointer",
-              },
+              style: scrollStyle,
               onClick: this.handleClick,
               onTouchStart: this.handleTouchStart.bind(this),
             },
@@ -1436,7 +1442,12 @@
     return history.map(function(m) {
       var msg = { role: m.role };
       if (m.content != null) msg.content = m.content;
-      if (m.tool_calls) msg.tool_calls = m.tool_calls;
+      if (m.tool_calls) {
+        msg.tool_calls = m.tool_calls;
+        // OpenAI spec requires content: null (not absent) on assistant tool_call messages.
+        // Omitting it causes errors with some providers when replaying the history.
+        if (!('content' in msg)) msg.content = null;
+      }
       if (m.tool_call_id) msg.tool_call_id = m.tool_call_id;
       if (!m.tool_calls && msg.content == null) msg.content = m._displayContent || '';
       return msg;
