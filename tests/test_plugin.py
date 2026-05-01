@@ -703,9 +703,9 @@ def test_template_theme_injection():
 
     # Check for our template's key elements
     assert "docbuddy-static" in html, "Template should include our static files"
-    assert "applyLLMTheme" in html or "/docbuddy-static/themes/" in html, (
-        "Template should include theme injection"
-    )
+    assert (
+        "applyLLMTheme" in html or "/docbuddy-static/themes/" in html
+    ), "Template should include theme injection"
 
 
 def test_template_script_order():
@@ -1809,9 +1809,9 @@ def test_cli_standalone_html_is_packaged():
 
     pkg_dir = pathlib.Path(docbuddy.__file__).parent
     standalone_path = pkg_dir / "standalone.html"
-    assert standalone_path.is_file(), (
-        "standalone.html must be present in the installed package"
-    )
+    assert (
+        standalone_path.is_file()
+    ), "standalone.html must be present in the installed package"
 
 
 def test_cli_standalone_html_uses_local_static_path():
@@ -1822,12 +1822,12 @@ def test_cli_standalone_html_uses_local_static_path():
 
     pkg_dir = pathlib.Path(docbuddy.__file__).parent
     html = (pkg_dir / "standalone.html").read_text(encoding="utf-8")
-    assert "./static" in html, (
-        "standalone.html should reference './static' for local assets"
-    )
-    assert "../src/docbuddy/static" not in html, (
-        "standalone.html must not reference the repo-layout path ../src/docbuddy/static"
-    )
+    assert (
+        "./static" in html
+    ), "standalone.html should reference './static' for local assets"
+    assert (
+        "../src/docbuddy/static" not in html
+    ), "standalone.html must not reference the repo-layout path ../src/docbuddy/static"
 
 
 def test_cli_main_exits_on_missing_standalone(monkeypatch, tmp_path):
@@ -2060,10 +2060,10 @@ def test_cli_uses_directory_not_chdir(monkeypatch, tmp_path):
     assert handler is not None, "HTTPServer must be called with a handler"
     # The handler must be a functools.partial with directory= keyword set
     assert isinstance(handler, functools.partial), "handler must be a functools.partial"
-    assert "directory" in handler.keywords, (
-        "handler must have directory= keyword argument"
-    )
+    assert (
+        "directory" in handler.keywords
+    ), "handler must have directory= keyword argument"
     # directory must point to the package dir (tmp_path in this test)
-    assert handler.keywords["directory"] == str(tmp_path), (
-        "directory= must be the package directory"
-    )
+    assert handler.keywords["directory"] == str(
+        tmp_path
+    ), "directory= must be the package directory"
